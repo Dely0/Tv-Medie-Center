@@ -1,6 +1,8 @@
 """FastAPI 路由"""
 import logging
 import subprocess
+import concurrent.futures
+import time
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -8,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from app.database import (
     search_videos, get_videos_by_type, get_video_detail,
     get_home_data, get_watch_history, save_watch_history,
+    upsert_video, rebuild_fts,
 )
 from app.crawler import get_status as get_crawl_status, run_crawl
 from app.player import play as mpv_play, stop as mpv_stop, current_info as player_info
@@ -18,6 +21,7 @@ from app.maccms_source import (
     get_maccms_crawlable_sources,
     MaccmsSource,
 )
+from config import SEARCH_TIMEOUT
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
 logger = logging.getLogger("api")
@@ -72,12 +76,9 @@ def api_search(
     """
     搜索逻辑：
     1. 先查本地 SQLite（已同步/搜索过的缓存）
-    2. 并行查 MacCMS 源获取远程结果（3 秒超时）
+    2. 并行查 MacCMS 源获取远程结果（每个源最多 SEARCH_TIMEOUT 秒）
     3. 合并去重 → 缓存到 DB → 返回
     """
-    import concurrent.futures
-    import time
-
     if not q.strip():
         return {"results": [], "total": 0, "page": page}
 
@@ -85,25 +86,33 @@ def api_search(
     local_results, _ = search_videos(q, 1, 9999)
     local_seen = {r["source_url"] for r in local_results}
 
-    # 2. 并行远程搜索（每个源最多 3 秒）
+    # 2. 并行远程搜索
     sources = get_maccms_crawlable_sources()
     remote_items = []
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=len(sources)) as pool:
-        futures = {pool.submit(src.search, q): src for src in sources}
-        for f in concurrent.futures.as_completed(futures, timeout=6):
+    if sources:
+        wall_timeout = SEARCH_TIMEOUT + 3  # 给 fallback 留余量
+        deadline = time.time() + wall_timeout + 2
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(sources), 4)) as pool:
+            futures = {pool.submit(src.search, q, SEARCH_TIMEOUT): src for src in sources}
             try:
-                items = f.result(timeout=3)
-                for item in items:
-                    su = item.get("source_url", "")
-                    if su and su not in local_seen:
-                        local_seen.add(su)
-                        remote_items.append(item)
-            except Exception:
-                continue
+                for f in concurrent.futures.as_completed(futures, timeout=wall_timeout):
+                    try:
+                        items = f.result(timeout=max(0, deadline - time.time()))
+                        for item in items:
+                            su = item.get("source_url", "")
+                            if su and su not in local_seen:
+                                local_seen.add(su)
+                                remote_items.append(item)
+                    except concurrent.futures.TimeoutError:
+                        logger.warning(f"搜索单个源超时")
+                    except Exception:
+                        continue
+            except concurrent.futures.TimeoutError:
+                logger.warning(f"搜索整体超时 ({wall_timeout}s), 已获取 {len(remote_items)} 条远程结果")
+        logger.info(f"搜索「{q}」: 本地 {len(local_results)} 条 + 远程 {len(remote_items)} 条")
 
     # 3. 远程结果入库（获得真实 id）
-    from app.database import upsert_video, rebuild_fts
     for item in remote_items:
         try:
             upsert_video({
@@ -121,7 +130,8 @@ def api_search(
             })
         except Exception:
             pass
-    rebuild_fts()
+    if remote_items:
+        rebuild_fts()
     # 4. 重新查本地（包含刚插入的远程结果，带真实 id）
     local_results, total = search_videos(q, page, page_size)
     return {
@@ -136,10 +146,52 @@ def api_search(
 
 @app.get("/api/video/{video_id}")
 def api_video_detail(video_id: int):
-    """视频详情 + 剧集列表"""
+    """视频详情 + 剧集列表（如果本地无剧集，尝试从源实时获取）"""
     detail = get_video_detail(video_id)
     if not detail:
         raise HTTPException(404, "视频不存在")
+
+    # 如果本地没有剧集，尝试从远程源实时拉取
+    if not detail.get("episodes"):
+        logger.info(f"本地无剧集, 尝试从远程源拉取: {detail.get('title')}")
+        from app.database import upsert_episode
+        source_url = detail.get("source_url", "")
+        source_name = detail.get("source", "")
+        fetched = False
+
+        # 优先用同名的源
+        if source_name:
+            for src in get_maccms_manager().get_all():
+                if src.name == source_name:
+                    try:
+                        info, episodes = src.get_detail(source_url)
+                        if episodes:
+                            for ep in episodes:
+                                upsert_episode(video_id, ep)
+                            fetched = True
+                            logger.info(f"从 {source_name} 拉取到 {len(episodes)} 集")
+                    except Exception:
+                        pass
+                    break
+
+        # 如果同名源没拉到, 遍历所有源
+        if not fetched:
+            for src in get_maccms_manager().get_all():
+                try:
+                    info, episodes = src.get_detail(source_url)
+                    if episodes:
+                        for ep in episodes:
+                            upsert_episode(video_id, ep)
+                        fetched = True
+                        logger.info(f"从 {src.name} 拉取到 {len(episodes)} 集")
+                        break
+                except Exception:
+                    continue
+
+        # 重新查询（包含刚入库的剧集）
+        if fetched:
+            detail = get_video_detail(video_id)
+
     return detail
 
 

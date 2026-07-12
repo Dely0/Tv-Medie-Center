@@ -17,6 +17,9 @@ SEARCH_CACHE_TTL = 600
 # 请求超时（秒）
 REQUEST_TIMEOUT = 15
 
+# 搜索超时（秒）— 交互式搜索用更短的超时
+SEARCH_TIMEOUT = 5
+
 # 用户代理轮换
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",

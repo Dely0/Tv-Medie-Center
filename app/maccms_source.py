@@ -46,7 +46,7 @@ from typing import Optional
 from urllib.parse import urljoin, urlencode, quote
 
 import cloudscraper
-from config import USER_AGENTS, REQUEST_TIMEOUT
+from config import USER_AGENTS, REQUEST_TIMEOUT, SEARCH_TIMEOUT
 
 logger = logging.getLogger("maccms")
 
@@ -93,7 +93,7 @@ class MaccmsSource:
             "Accept": "application/json, text/plain, */*",
         }
 
-    def _request(self, params: dict) -> Optional[dict]:
+    def _request(self, params: dict, timeout: int = None) -> Optional[dict]:
         """调用 MacCMS API（直接用 urllib，避免 cloudscraper 卡住）"""
         import urllib.request, urllib.parse
         params.setdefault("ac", "list")
@@ -102,28 +102,37 @@ class MaccmsSource:
         url = f"{self.api_url}?{qs}"
         try:
             req = urllib.request.Request(url, headers=self._headers())
-            resp = urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT)
+            resp = urllib.request.urlopen(req, timeout=timeout or REQUEST_TIMEOUT)
             data = json.loads(resp.read().decode("utf-8", errors="replace"))
             if data.get("code") != 1:
-                logger.warning(f"[{self.name}] API error: code={data.get('code')}")
+                logger.debug(f"[{self.name}] API error: code={data.get('code')}")
                 return None
             return data
         except json.JSONDecodeError:
             logger.warning(f"[{self.name}] 返回非 JSON，可能不是 MacCMS 站点")
             return None
         except Exception as e:
-            logger.warning(f"[{self.name}] 请求失败: {e}")
+            logger.warning(f"[{self.name}] API 请求失败: {e}")
             return None
 
     # ─── 公开接口 ───
 
-    def search(self, keyword: str) -> list[dict]:
-        """搜索视频"""
-        params = {"ac": "list", "wd": keyword}
-        data = self._request(params)
-        if not data:
-            return []
-        return self._normalize_list(data.get("list") or [])
+    def search(self, keyword: str, timeout: int = None) -> list[dict]:
+        """
+        搜索视频
+
+        某些 MacCMS 站点 `ac=list` 不支持 wd 参数搜索，
+        会回退到 `ac=videolist` 再试一次。
+        """
+        timeout = timeout or SEARCH_TIMEOUT
+        # 1. 先用 ac=list 搜索
+        data = self._request({"ac": "list", "wd": keyword}, timeout=timeout)
+        items = data.get("list") if data else []
+        # 2. 如果没结果，换 ac=videolist 再试（部分站点协议差异）
+        if not items:
+            data = self._request({"ac": "videolist", "wd": keyword}, timeout=timeout)
+            items = data.get("list") if data else []
+        return self._normalize_list(items)
 
     def get_list(self, category: str = "movie", pagesize: int = 100) -> list[dict]:
         """
@@ -281,7 +290,6 @@ class MaccmsSource:
         多个源用 $$$ 分隔，通常第一个是 HTML 播放页，后面的有直链。
         会优先选择含有 .m3u8/.mp4 直链的源。
         """
-        episodes = []
         play_url = item.get("vod_play_url", "")
 
         if not play_url:
@@ -298,19 +306,29 @@ class MaccmsSource:
 
         # 解析单个源的剧集
         def parse_source(source_str: str) -> list[dict]:
-            parts = re.split(r'#+', source_str.strip())
-            result = []
-            for part in parts:
-                part = part.strip()
-                if not part:
+            # 1. 按 # 拆分候选片段
+            raw_parts = re.split(r'#+', source_str.strip())
+            # 2. 智能合并：如果某个片段不含 `$http` 结构, 说明它是上一个 URL 的 fragment, 合并回去
+            merged = []
+            for p in raw_parts:
+                p = p.strip()
+                if not p:
                     continue
+                has_ep = bool(re.search(r'\$https?://', p))
+                if has_ep or not merged:
+                    merged.append(p)
+                else:
+                    merged[-1] += '#' + p
+
+            result = []
+            for part in merged:
                 # 格式: "标题$地址"
                 m = re.match(r'(.+?)\$(https?://[^\$]+)', part)
                 if m:
                     title = m.group(1).strip()
                     url = m.group(2).strip()
                 else:
-                    # 尝试反转
+                    # 尝试反转: "地址$标题"
                     m2 = re.match(r'(https?://[^\$]+)\$(.+)', part)
                     if m2:
                         url = m2.group(1).strip()
@@ -330,19 +348,23 @@ class MaccmsSource:
                 })
             return result
 
-        # 解析所有源
-        parsed_sources = [parse_source(s) for s in sources if s.strip()]
+        # 解析所有源, 过滤掉空列表
+        parsed_sources = [s for s in (parse_source(s) for s in sources if s.strip()) if s]
 
         if not parsed_sources:
             return []
 
-        # 优先选择有直链视频的源
+        # 优先选择有直链视频且集数最多的源
+        best = None
         for src in parsed_sources:
-            if src and is_direct_video(src[0]["play_url"]):
-                return src
+            if src and src[0]["play_url"] and is_direct_video(src[0]["play_url"]):
+                if best is None or len(src) > len(best):
+                    best = src
+        if best:
+            return best
 
-        # 回退到第一个源
-        return parsed_sources[0]
+        # 回退到集数最多的源
+        return max(parsed_sources, key=len)
 
     def _make_detail_url(self, vod_id) -> str:
         """生成详情页 URL"""
@@ -511,8 +533,8 @@ class _MaccmsWrapper:
         self.base_url = source.base_url
         self.enabled = source.enabled
 
-    def search(self, keyword: str) -> list[dict]:
-        return self._src.search(keyword)
+    def search(self, keyword: str, timeout: int = None) -> list[dict]:
+        return self._src.search(keyword, timeout)
 
     def get_list(self, category: str = "movie", pagesize: int = 100) -> list[dict]:
         return self._src.get_list(category, pagesize)

@@ -1,7 +1,6 @@
 {
-  "_说明": "MacCMS 视频源配置文件 — 已验证可用的源",
-  "_说明2": "所有源都经过了实际测试，支持搜索+分类浏览+播放地址获取",
-  "_更新时间": "2026-07-11",
+  "_说明": "MacCMS 视频源配置文件 — 按优先级排序，越靠前越优先使用",
+  "_说明2": "量子资源 (lziapi) 经测试资源最全, 支持多集电视剧完整拉取",
   "sources": [
     {
       "name": "量子资源",
@@ -12,12 +11,17 @@
         "tv": "2",
         "variety": "3",
         "anime": "4"
-      },
-      "_verified": {
-        "total_videos": 143109,
-        "search_support": true,
-        "categories": ["电影片","连续剧","综艺片","动漫片","动作片","喜剧片","爱情片","科幻片","恐怖片","剧情片"],
-        "play_urls": true
+      }
+    },
+    {
+      "name": "量子资源(备用)",
+      "base_url": "http://cj.lziapi.com",
+      "enabled": true,
+      "category_map": {
+        "movie": "1",
+        "tv": "2",
+        "variety": "3",
+        "anime": "4"
       }
     },
     {
@@ -29,12 +33,6 @@
         "tv": "2",
         "variety": "3",
         "anime": "4"
-      },
-      "_verified": {
-        "total_videos": 108420,
-        "search_support": true,
-        "categories": ["电影","电视剧","综艺","动漫"],
-        "play_urls": true
       }
     },
     {
@@ -46,14 +44,7 @@
         "tv": "2",
         "variety": "3",
         "anime": "4"
-      },
-      "_verified": {
-        "total_videos": 120591,
-        "search_support": true,
-        "categories": ["电影","电视剧","综艺","动漫"],
-        "play_urls": true
       }
     }
-  ],
-  "_建议": "以上源均经过验证。如果某个源失效，将其 enabled 改为 false 即可。建议定期关注社区更新。"
+  ]
 }
