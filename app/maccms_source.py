@@ -119,20 +119,43 @@ class MaccmsSource:
 
     def search(self, keyword: str, timeout: int = None) -> list[dict]:
         """
-        搜索视频
+        搜索视频 — 双通道并行，取先返回有结果的那个。
 
-        某些 MacCMS 站点 `ac=list` 不支持 wd 参数搜索，
-        会回退到 `ac=videolist` 再试一次。
+        MacCMS 站点协议有差异：部分支持 `ac=list` 搜索，
+        部分需要 `ac=videolist`。两个请求同时发出，
+        谁先回来就用谁，避免串行重试的双倍延迟。
         """
+        import threading
         timeout = timeout or SEARCH_TIMEOUT
-        # 1. 先用 ac=list 搜索
-        data = self._request({"ac": "list", "wd": keyword}, timeout=timeout)
-        items = data.get("list") if data else []
-        # 2. 如果没结果，换 ac=videolist 再试（部分站点协议差异）
-        if not items:
-            data = self._request({"ac": "videolist", "wd": keyword}, timeout=timeout)
-            items = data.get("list") if data else []
-        return self._normalize_list(items)
+
+        result = []
+        lock = threading.Lock()
+        done = threading.Event()
+
+        def try_search(ac: str):
+            nonlocal result
+            # 如果另一个线程已经拿到结果，直接退出
+            if done.is_set():
+                return
+            deadline = timeout * 0.8  # 每个通道分 80% 时间
+            try:
+                data = self._request({"ac": ac, "wd": keyword}, timeout=deadline)
+                items = data.get("list") if data else []
+                if items:
+                    with lock:
+                        if not done.is_set():
+                            result = items
+                            done.set()
+            except Exception:
+                pass
+
+        threads = [threading.Thread(target=try_search, args=(ac,)) for ac in ("list", "videolist")]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=timeout + 0.5)  # 最多等总超时+0.5
+
+        return self._normalize_list(result)
 
     def get_list(self, category: str = "movie", pagesize: int = 100) -> list[dict]:
         """

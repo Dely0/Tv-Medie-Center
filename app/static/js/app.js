@@ -7,6 +7,7 @@ let _browsePage = 1;
 let _searchPage = 1;
 let _hlsInstance = null;
 let _playerTimer = null;
+let _mouseIdleTimer = null;
 let _playId = 0;       // current video id
 let _playEp = 0;       // current episode number
 let _playEps = [];     // episode list [{num, title}]
@@ -136,6 +137,24 @@ async function loadDetail(videoId) {
 
 /* -- Player -- */
 
+// Mouse idle on video → blur so native controls auto-hide after 3s
+function setupMouseIdle(video) {
+  video.addEventListener("mousemove", function() {
+    video.focus(); // show controls on mouse activity
+    if (_mouseIdleTimer) clearTimeout(_mouseIdleTimer);
+    _mouseIdleTimer = setTimeout(() => {
+      // Only blur if nothing else is focused (buttons)
+      if (!document.activeElement || document.activeElement === video) {
+        video.blur();
+      }
+    }, 3000);
+  });
+  video.addEventListener("mouseleave", function() {
+    if (_mouseIdleTimer) clearTimeout(_mouseIdleTimer);
+    setTimeout(() => { if (document.activeElement === video) video.blur(); }, 500);
+  });
+}
+
 // Initial player setup + first play
 async function openPlayerAndPlay(videoId, episode) {
   // Switch to player view
@@ -185,6 +204,9 @@ async function openPlayerAndPlay(videoId, episode) {
       }
     }
   });
+
+  // Mouse idle → blur video so controls auto-hide
+  setupMouseIdle(video);
 
   // Actually play
   await loadAndPlayUrl(videoId, episode);
