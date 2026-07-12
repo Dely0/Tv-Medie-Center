@@ -7,7 +7,7 @@ let _browsePage = 1;
 let _searchPage = 1;
 let _hlsInstance = null;
 let _playerTimer = null;
-let _mouseIdleTimer = null;
+let _controlsTimer = null;
 let _playId = 0;       // current video id
 let _playEp = 0;       // current episode number
 let _playEps = [];     // episode list [{num, title}]
@@ -137,22 +137,28 @@ async function loadDetail(videoId) {
 
 /* -- Player -- */
 
-// Mouse idle on video → blur so native controls auto-hide after 3s
-function setupMouseIdle(video) {
-  video.addEventListener("mousemove", function() {
-    video.focus(); // show controls on mouse activity
-    if (_mouseIdleTimer) clearTimeout(_mouseIdleTimer);
-    _mouseIdleTimer = setTimeout(() => {
-      // Only blur if nothing else is focused (buttons)
-      if (!document.activeElement || document.activeElement === video) {
-        video.blur();
-      }
-    }, 3000);
+// Mouse idle → hide native controls overlay, keyboard always works
+function setupControlsAutoHide(video) {
+  video.controls = true;
+  let timer = null;
+  function showControls() {
+    video.controls = true;
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => { video.controls = false; }, 3000);
+  }
+  video.addEventListener("mousemove", showControls);
+  video.addEventListener("mouseleave", () => {
+    if (timer) clearTimeout(timer);
+    video.controls = false;
   });
-  video.addEventListener("mouseleave", function() {
-    if (_mouseIdleTimer) clearTimeout(_mouseIdleTimer);
-    setTimeout(() => { if (document.activeElement === video) video.blur(); }, 500);
+  video.addEventListener("keydown", () => {
+    // Keyboard seeking keeps controls visible momentarily
+    video.controls = true;
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => { video.controls = false; }, 2000);
   });
+  // Start hidden
+  setTimeout(() => { video.controls = false; }, 2000);
 }
 
 // Initial player setup + first play
@@ -193,20 +199,8 @@ async function openPlayerAndPlay(videoId, episode) {
   const video = document.getElementById("tv-video");
   video.volume = 0.2;
 
-  // Keyboard handler for video element - prevent arrow keys from being consumed by video controls
-  // so our document handler can navigate buttons when a button is focused
-  video.addEventListener("keydown", function(ve) {
-    if (ve.key === "ArrowLeft" || ve.key === "ArrowRight") {
-      // Check if a player button is focused - if so, let document handler handle it
-      const cur = document.activeElement;
-      if (cur && cur.closest(".player-nav-btn, .player-close-btn")) {
-        ve.stopPropagation();
-      }
-    }
-  });
-
-  // Mouse idle → blur video so controls auto-hide
-  setupMouseIdle(video);
+  // Native controls auto-hide after idle, keyboard seeking always works
+  setupControlsAutoHide(video);
 
   // Actually play
   await loadAndPlayUrl(videoId, episode);
@@ -244,8 +238,10 @@ async function switchEpisode(dir) {
   // Refocus video so keyboard seeking (arrow keys) works
   const video = document.getElementById("tv-video");
   if (video) {
-    video.focus();
-    // Try re-entering fullscreen — will succeed if browser allows it
+    video.controls = true;
+    if (video.focus) video.focus();
+    if (_controlsTimer) clearTimeout(_controlsTimer);
+    _controlsTimer = setTimeout(() => { if (video) video.controls = false; }, 2000);
     if (video.requestFullscreen) {
       video.requestFullscreen().catch(() => {});
     } else if (video.webkitRequestFullscreen) {
