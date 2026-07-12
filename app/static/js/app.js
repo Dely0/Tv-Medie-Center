@@ -451,28 +451,25 @@ document.addEventListener("keydown", function(e) {
 
   // ── Normal views (home / browse / detail / history) ──
   const cur = document.activeElement;
+  const onNav = cur && cur.closest("#nav");
 
-  // Left/Right on episode buttons → navigate between episodes
-  if (cur && cur.closest(".episode-grid") && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
-    e.preventDefault();
-    moveFocus(e.key === "ArrowLeft" ? "left" : "right");
-    return;
-  }
-
-  // Left/Right → cycle top nav tabs (TV remote primary axis)
+  // Left/Right: on nav → cycle tabs, on content → navigate content
   if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
     e.preventDefault();
-    cycleNav(e.key === "ArrowLeft" ? -1 : 1);
+    if (onNav) {
+      cycleNav(e.key === "ArrowLeft" ? -1 : 1);
+    } else {
+      moveFocus(e.key === "ArrowLeft" ? "left" : "right");
+    }
     return;
   }
 
-  // Up/Down → navigate within content area
+  // Up/Down
   if (e.key === "ArrowUp" || e.key === "ArrowDown") {
     e.preventDefault();
-    if (cur && cur.closest("#nav")) {
-      focusFirstInView();  // nav → jump into content
+    if (onNav) {
+      focusFirstInView();
     } else if (e.key === "ArrowUp") {
-      // content → jump to nav
       const active = document.querySelector("#nav .nav-btn.active");
       if (active) active.focus();
     } else {
