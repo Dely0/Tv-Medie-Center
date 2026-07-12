@@ -8,3 +8,6 @@ data/media.db-wal
 data/server.log
 data/mpv.log
 data/mpv.exe
+data/portable_config/cache/
+*.txt
+start.bat
