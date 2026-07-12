@@ -20,3 +20,7 @@ if errorlevel 1 goto wait
 
 echo Server ready!
 start msedge.exe --start-fullscreen --new-window http://localhost:8080
+
+:: 延迟后发送 F11 确保全屏
+timeout /t 2 /nobreak >nul
+powershell -NoProfile -Command "$w=New-Object -ComObject WScript.Shell;for($i=0;$i-lt10;$i++){$r=$w.AppActivate('TV Media Center');if($r){$w.SendKeys('{F11}');break};Start-Sleep -Milliseconds 500}"

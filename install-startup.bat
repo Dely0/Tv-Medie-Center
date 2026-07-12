@@ -21,6 +21,9 @@ echo timeout /t 2 /nobreak ^>nul
 echo powershell -Command "try{^($wc=New-Object Net.WebClient^).DownloadString('http://localhost:8080/'^)^|Out-Null;exit 0^}catch{exit 1^}" ^>nul 2^>^&1
 echo if errorlevel 1 goto wait
 echo start msedge.exe --start-fullscreen --new-window http://localhost:8080
+echo timeout /t 1 /nobreak ^>nul
+echo powershell -NoProfile -Command "$w=New-Object -ComObject WScript.Shell;for($i=0;$i-lt10;$i++){$r=$w.AppActivate('TV Media Center');if($r){$w.SendKeys('{F11}');break};Start-Sleep -Milliseconds 500}"
+
 ) > %SCRIPT%
 
 echo Startup shortcut created at %SCRIPT%
