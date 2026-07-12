@@ -468,12 +468,16 @@ document.addEventListener("keydown", function(e) {
   if (e.key === "ArrowUp" || e.key === "ArrowDown") {
     e.preventDefault();
     if (onNav) {
-      focusFirstInView();
-    } else if (e.key === "ArrowUp") {
-      const active = document.querySelector("#nav .nav-btn.active");
-      if (active) active.focus();
-    } else {
+      if (e.key === "ArrowDown") focusFirstInView();
+      // Up on nav → no-op (already at top)
+      return;
+    }
+    if (e.key === "ArrowDown") {
       moveFocus("down");
+    } else {
+      // ArrowUp from content: moveFocus already includes nav buttons
+      // as candidates, so at the top row it naturally jumps to nav
+      moveFocus("up");
     }
     return;
   }
