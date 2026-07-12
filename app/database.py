@@ -226,7 +226,7 @@ def get_watch_history(limit: int = 20) -> list[dict]:
                    e.episode_title
             FROM watch_history h
             JOIN videos v ON h.video_id = v.id
-            LEFT JOIN episodes e ON h.episode_id = e.id
+            LEFT JOIN episodes e ON h.episode_id = e.episode_num AND e.video_id = h.video_id
             ORDER BY h.watched_at DESC
             LIMIT ?
             """, (limit,)

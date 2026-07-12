@@ -219,8 +219,7 @@ function stopPlayer() {
   if (v) { v.pause(); v.src = ""; v.load(); v.remove(); }
   if (_hlsInstance) { _hlsInstance.destroy(); _hlsInstance = null; }
   if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
-  const detailBtn = document.querySelector("#view-detail .play-btn");
-  if (detailBtn) navigateTo("detail", detailBtn.getAttribute("onclick").match(/\d+/)[0]);
+  if (_playId) navigateTo("detail", _playId);
   else navigateTo("home");
 }
 
@@ -275,7 +274,7 @@ function loadHistory() {
     if (!data || !data.length) { el.innerHTML = '<div class="empty-view">暂无观看记录</div>'; return; }
     var html = '<div class="card-grid">';
     data.forEach(function(h) {
-      var label = h.episode_title || (h.episode_num ? "第" + h.episode_num + "集" : "电影");
+      var label = h.episode_id ? "第" + h.episode_id + "集" : "电影";
       var onclick = "hideSearch();navigateTo('detail'," + h.video_id + ")";
       html += '<div class="video-card" tabindex="0" onclick="' + onclick + '">' +
         '<img class="card-img" src="' + (h.cover || "") + '" loading="lazy">' +
@@ -300,8 +299,20 @@ document.addEventListener("keydown", function(e) {
     if (e.key === "Escape" || e.key === "Backspace") {
       stopPlayer();
       e.preventDefault();
+      return;
     }
-    return;
+    // 方向键在播放器按钮间导航
+    if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+      e.preventDefault();
+      var btns = document.querySelectorAll(".player-nav-btn:not([disabled]), .player-close-btn");
+      var cur = document.activeElement;
+      var idx = Array.from(btns).indexOf(cur);
+      if (idx < 0) idx = -1;
+      if (e.key === "ArrowLeft") { btns[Math.max(0, idx - 1)].focus(); }
+      if (e.key === "ArrowRight") { btns[Math.min(btns.length - 1, idx + 1)].focus(); }
+      return;
+    }
+    return; // 其他键放行给video
   }
 
   const a = document.activeElement;
