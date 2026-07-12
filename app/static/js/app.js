@@ -10,6 +10,7 @@ let _playerTimer = null;
 let _playId = 0;       // current video id
 let _playEp = 0;       // current episode number
 let _playEps = [];     // episode list [{num, title}]
+let _navCycling = 0; // 导航栏切换Tab时阻止autoFocusView抢焦点(计数器,支持连续快速切换)
 
 function esc(s) {
   if (!s) return "";
@@ -48,6 +49,7 @@ function navigateTo(view, param) {
 // 进入新视图后自动聚焦第一个可操作元素
 function autoFocusView() {
   setTimeout(() => {
+    if (_navCycling > 0) { _navCycling--; return; }
     const view = document.querySelector(".view.active");
     if (!view) return;
     const first = view.querySelector(".video-card, .play-btn, .episode-btn, .section-more, .browse-tab");
@@ -492,17 +494,15 @@ document.addEventListener("keydown", function(e) {
 function cycleNav(dir) {
   const btns = document.querySelectorAll("#nav .nav-btn");
   if (!btns.length) return;
+  _navCycling++;   // 阻止 autoFocusView 抢焦点(计数器)
   let cur = document.querySelector("#nav .nav-btn.active") || btns[0];
   let i = Array.from(btns).indexOf(cur);
   let next = (i + dir + btns.length) % btns.length;
   let btn = btns[next];
   btn.focus();
-  // 直接激活页面切换, 无需再按 Enter
   let view = btn.getAttribute("data-view");
   let type = btn.getAttribute("data-type");
   if (view) navigateTo(view, type);
-  // autoFocusView 会把焦点抢到内容区, 按↑↓才下去
-  setTimeout(() => { btn.focus(); }, 60);
 }
 
 function focusFirstInView() {
@@ -515,11 +515,9 @@ function focusFirstInView() {
 function moveFocus(dir) {
   const view = document.querySelector(".view.active");
   if (!view) return;
-  // Only focusable items within the active view (and nav bar for up)
   const items = Array.from(view.querySelectorAll(
     ".video-card, .play-btn, .episode-btn, .section-more, .browse-tab, .browse-prev, .browse-next"
   ));
-  // Include nav-btn and search-btn when moving up to reach the header
   if (dir === "up") {
     const navItems = Array.from(document.querySelectorAll("#nav .nav-btn, .search-btn"));
     items.unshift(...navItems);
@@ -543,7 +541,14 @@ function moveFocus(dir) {
     const d = Math.sqrt(dx * dx + dy * dy);
     if (d < bestDist) { best = i; bestDist = d; }
   }
-  if (best >= 0) items[best].focus();
+  if (best >= 0) {
+    // Moving up onto a nav button? Redirect to the currently active tab
+    if (dir === "up" && items[best].closest("#nav")) {
+      const active = document.querySelector("#nav .nav-btn.active");
+      if (active) { active.focus(); return; }
+    }
+    items[best].focus();
+  }
 }
 
 /* -- Fullscreen exit → no-op, don't refocus video (that keeps controls visible) -- */
