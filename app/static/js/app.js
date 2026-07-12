@@ -501,6 +501,8 @@ function cycleNav(dir) {
   let view = btn.getAttribute("data-view");
   let type = btn.getAttribute("data-type");
   if (view) navigateTo(view, type);
+  // autoFocusView 会把焦点抢到内容区, 按↑↓才下去
+  setTimeout(() => { btn.focus(); }, 60);
 }
 
 function focusFirstInView() {
