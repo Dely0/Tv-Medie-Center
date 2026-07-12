@@ -19,4 +19,4 @@ powershell -Command "try{($wc=New-Object Net.WebClient).DownloadString('http://l
 if errorlevel 1 goto wait
 
 echo Server ready!
-start msedge.exe --start-fullscreen --new-window http://localhost:8080
+start msedge.exe --kiosk http://localhost:8080
