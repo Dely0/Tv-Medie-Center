@@ -17,6 +17,10 @@ function esc(s) {
 }
 
 function navigateTo(view, param) {
+  // If leaving player, stop it first
+  if (_currentView === "player" && view !== "player") {
+    stopPlayerInternal(false);
+  }
   document.querySelectorAll(".view").forEach(v => { v.classList.remove("active"); v.classList.add("hidden"); });
   document.querySelectorAll(".nav-btn").forEach(b => b.classList.remove("active"));
   _currentView = view;
@@ -69,14 +73,25 @@ async function loadBrowse(type) {
   await loadBrowsePage();
 }
 
-async function loadBrowsePage() {
+async function loadBrowsePage(direction) {
+  if (direction === "next") _browsePage++;
+  else if (direction === "prev" && _browsePage > 1) _browsePage--;
   const el = document.getElementById("browse-content");
   try {
     const data = await F("/api/browse?type=" + _currentType + "&page=" + _browsePage);
-    if (!data.results || !data.results.length) { el.innerHTML = '<div class="empty-view">No data</div>'; return; }
+    if (!data.results || !data.results.length) {
+      if (direction === "next") _browsePage--;
+      el.innerHTML = '<div class="empty-view">No data</div>';
+      return;
+    }
     let html = '<div class="card-grid">';
     for (const v of data.results) html += card(v);
     html += '</div>';
+    html += '<div style="display:flex;justify-content:center;gap:16px;margin-top:24px">' +
+      (_browsePage > 1 ? '<button class="nav-btn" onclick="loadBrowsePage(\'prev\')">◀ 上一页</button>' : '') +
+      '<span style="font-size:22px;color:var(--text-dim);padding:10px 16px">第 ' + _browsePage + ' 页</span>' +
+      (data.results.length >= 30 ? '<button class="nav-btn" onclick="loadBrowsePage(\'next\')">下一页 ▶</button>' : '') +
+      '</div>';
     el.innerHTML = html;
   } catch (e) {
     el.innerHTML = '<div class="error-view">Load failed</div>';
@@ -100,19 +115,19 @@ async function loadDetail(videoId) {
     if (v.episodes && v.episodes.length && v.type !== "movie") {
       epHtml = '<div style="font-size:22px;font-weight:bold;margin:16px 0 12px">Episodes</div><div class="episode-grid">';
       for (const ep of v.episodes) {
-        epHtml += '<button class="episode-btn" onclick="playVideo(' + v.id + ',' + ep.episode_num + ')">' + (ep.episode_title || "Ep." + ep.episode_num) + '</button>';
+        epHtml += '<button class="episode-btn" onclick="openPlayerAndPlay(' + v.id + ',' + ep.episode_num + ')">' + (ep.episode_title || "Ep." + ep.episode_num) + '</button>';
       }
       epHtml += '</div>';
     }
 
     el.innerHTML =
       '<div class="detail-layout">' +
-      '<div class="detail-poster"><img src="' + (v.cover || "") + '" onerror="this.src=\'data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%22360%22 height=%22480%22><rect fill=%22%23222%22/></svg>\'"></div>' +
+      '<div class="detail-poster"><img src="' + (v.cover || imageFallback(360, 480)) + '" onerror="this.src=\'' + imageFallback(360, 480) + '\'"></div>' +
       '<div class="detail-info">' +
       '<div class="detail-title">' + esc(v.title) + '</div>' +
       (meta.length ? '<div class="detail-meta">' + meta.join(" | ") + '</div>' : "") +
       (v.description ? '<div class="detail-desc">' + esc(v.description) + '</div>' : "") +
-      '<button class="play-btn" onclick="playVideo(' + v.id + ')">▶ Play</button>' +
+      '<button class="play-btn" onclick="openPlayerAndPlay(' + v.id + ')">▶ Play</button>' +
       epHtml + '</div></div>';
   } catch (e) {
     el.innerHTML = '<div class="error-view">Load failed</div>';
@@ -120,105 +135,201 @@ async function loadDetail(videoId) {
 }
 
 /* -- Player -- */
-async function playVideo(videoId, episode) {
-  const el = document.getElementById("view-player");
+
+// Initial player setup + first play
+async function openPlayerAndPlay(videoId, episode) {
+  // Switch to player view
   document.querySelectorAll(".view").forEach(v => { v.classList.remove("active"); v.classList.add("hidden"); });
+  const el = document.getElementById("view-player");
   el.classList.remove("hidden");
   el.classList.add("active");
-  el.innerHTML = '<div class="loading"><div class="spinner"></div>Loading...</div>';
-
+  _currentView = "player";
   _playId = videoId;
   _playEp = episode || 1;
 
-  // 获取剧集列表
+  // Show loading
+  el.innerHTML = '<div class="loading"><div class="spinner"></div>Loading...</div>';
+
+  // Fetch episodes list
   try {
     const v = await F("/api/video/" + videoId);
     if (v && v.episodes) _playEps = v.episodes;
   } catch(e) { _playEps = []; }
 
+  // Build player container (preserved across episode switches)
+  const total = _playEps.length;
+  const epIdx = _playEps.findIndex(e => e.episode_num === _playEp);
+  const hasPrev = epIdx > 0;
+  const hasNext = epIdx >= 0 && epIdx < total - 1;
+
+  el.innerHTML =
+    '<div class="player-bar" id="player-bar">' +
+    '  <button class="player-nav-btn" id="btn-prev" onclick="switchEpisode(\'prev\')">◀ 上一集</button>' +
+    '  <span class="player-nav-title" id="player-title">Loading...</span>' +
+    '  <button class="player-nav-btn" id="btn-next" onclick="switchEpisode(\'next\')">下一集 ▶</button>' +
+    '  <button class="player-close-btn" onclick="stopPlayerFromClose()">✕</button>' +
+    '</div>' +
+    '<video id="tv-video" controls autoplay playsinline preload="auto"></video>';
+
+  const video = document.getElementById("tv-video");
+  video.volume = 0.2;
+
+  // Keyboard handler for video element - prevent arrow keys from being consumed by video controls
+  // so our document handler can navigate buttons when a button is focused
+  video.addEventListener("keydown", function(ve) {
+    if (ve.key === "ArrowLeft" || ve.key === "ArrowRight") {
+      // Check if a player button is focused - if so, let document handler handle it
+      const cur = document.activeElement;
+      if (cur && cur.closest(".player-nav-btn, .player-close-btn")) {
+        ve.stopPropagation();
+      }
+    }
+  });
+
+  // Actually play
+  await loadAndPlayUrl(videoId, episode);
+
+  // Update button states
+  updatePlayerButtons();
+
+  // Start progress saver
+  startHistoryTimer(video);
+
+  // Auto next on ended
+  video.addEventListener("ended", onVideoEnded);
+
+  // Try fullscreen (user gesture context - this works)
+  tryFullscreen(video);
+}
+
+// Switch episode without destroying/recreating the video element
+async function switchEpisode(dir) {
+  const idx = _playEps.findIndex(e => e.episode_num === _playEp);
+  let nextEp;
+  if (dir === "next" && idx >= 0 && idx < _playEps.length - 1) {
+    nextEp = _playEps[idx + 1].episode_num;
+  } else if (dir === "prev" && idx > 0) {
+    nextEp = _playEps[idx - 1].episode_num;
+  } else {
+    return;
+  }
+  _playEp = nextEp;
+  updatePlayerButtons();
+  document.getElementById("player-title").textContent = "Loading...";
+  await loadAndPlayUrl(_playId, _playEp);
+  updatePlayerButtons();
+
+  // Refocus video so keyboard seeking (arrow keys) works
+  const video = document.getElementById("tv-video");
+  if (video) {
+    video.focus();
+    // Try re-entering fullscreen — will succeed if browser allows it
+    if (video.requestFullscreen) {
+      video.requestFullscreen().catch(() => {});
+    } else if (video.webkitRequestFullscreen) {
+      video.webkitRequestFullscreen();
+    }
+  }
+}
+
+// Load URL and swap video src (preserves fullscreen)
+async function loadAndPlayUrl(videoId, episode) {
   let url = "/api/video/" + videoId + "/play";
   if (episode) url += "?episode=" + episode;
 
   try {
     const res = await fetch(url, { method: "POST" });
     const data = await res.json();
-    if (!data.success) { el.innerHTML = '<div class="error-view">Play failed</div>'; return; }
+    if (!data.success) return;
 
-    const total = _playEps.length;
-    const epIdx = _playEps.findIndex(e => e.episode_num === _playEp);
-    const hasPrev = epIdx > 0;
-    const hasNext = epIdx >= 0 && epIdx < total - 1;
-
-    el.innerHTML =
-      '<div class="player-bar">' +
-      '  <button class="player-nav-btn" id="btn-prev" ' + (hasPrev ? 'onclick="playPrev()"' : 'disabled') + '>◀ 上一集</button>' +
-      '  <span class="player-nav-title">' + esc(data.episode_title || ("Ep." + (_playEp))) + '</span>' +
-      '  <button class="player-nav-btn" id="btn-next" ' + (hasNext ? 'onclick="playNext()"' : 'disabled') + '>下一集 ▶</button>' +
-      '  <button class="player-close-btn" onclick="stopPlayer()">✕</button>' +
-      '</div>' +
-      '<video id="tv-video" controls autoplay playsinline preload="auto"></video>';
+    document.getElementById("player-title").textContent = data.episode_title || ("Ep." + episode);
 
     const video = document.getElementById("tv-video");
-    video.volume = 0.2;
+    if (!video) return;
 
-    if (_hlsInstance) _hlsInstance.destroy();
+    // Destroy old HLS
+    if (_hlsInstance) {
+      _hlsInstance.destroy();
+      _hlsInstance = null;
+    }
+
+    // Load new source
     if (typeof Hls !== "undefined" && Hls.isSupported() && data.play_url.indexOf(".m3u8") > 0) {
       const hls = new Hls();
       _hlsInstance = hls;
       hls.loadSource(data.play_url);
       hls.attachMedia(video);
-      hls.on(Hls.Events.MANIFEST_PARSED, () => video.play());
+      hls.on(Hls.Events.MANIFEST_PARSED, () => video.play().catch(() => {}));
     } else {
       video.src = data.play_url;
+      video.play().catch(() => {});
     }
-
-    if (_playerTimer) clearInterval(_playerTimer);
-    _playerTimer = setInterval(() => {
-      if (video && !video.paused && video.currentTime > 0) {
-        fetch("/api/history", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ video_id: videoId, episode_id: _playEp, progress_seconds: video.currentTime, total_seconds: video.duration || 0 })
-        }).catch(() => {});
-      }
-    }, 10000);
-
-    // 自动下一集
-    video.addEventListener("ended", () => {
-      if (hasNext) {
-        setTimeout(() => { playNext(); }, 1500);
-      }
-    });
-
-    setTimeout(() => {
-      const vv = document.getElementById("tv-video");
-      if (vv) { vv.focus(); if (vv.requestFullscreen) vv.requestFullscreen().then(()=>vv.focus()).catch(()=>{}); else if (vv.webkitRequestFullscreen) vv.webkitRequestFullscreen(); }
-    }, 200);
   } catch (e) {
-    el.innerHTML = '<div class="error-view">' + e.message + '</div>';
+    document.getElementById("player-title").textContent = "Play failed";
   }
 }
 
-function playNext() {
+function updatePlayerButtons() {
+  const idx = _playEps.findIndex(e => e.episode_num === _playEp);
+  const total = _playEps.length;
+  const prev = document.getElementById("btn-prev");
+  const next = document.getElementById("btn-next");
+  if (prev) prev.disabled = idx <= 0;
+  if (next) next.disabled = idx < 0 || idx >= total - 1;
+}
+
+function onVideoEnded() {
   const idx = _playEps.findIndex(e => e.episode_num === _playEp);
   if (idx >= 0 && idx < _playEps.length - 1) {
-    playVideo(_playId, _playEps[idx + 1].episode_num);
+    setTimeout(() => switchEpisode("next"), 1500);
   }
 }
 
-function playPrev() {
-  const idx = _playEps.findIndex(e => e.episode_num === _playEp);
-  if (idx > 0) {
-    playVideo(_playId, _playEps[idx - 1].episode_num);
+function startHistoryTimer(video) {
+  if (_playerTimer) clearInterval(_playerTimer);
+  _playerTimer = setInterval(() => {
+    saveProgress(video);
+  }, 10000);
+}
+
+function saveProgress(video) {
+  if (!video || video.paused || !video.currentTime) return;
+  fetch("/api/history", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      video_id: _playId,
+      episode_id: _playEp,
+      progress_seconds: Math.floor(video.currentTime),
+      total_seconds: Math.floor(video.duration || 0)
+    })
+  }).catch(() => {});
+}
+
+function tryFullscreen(el) {
+  if (!el) return;
+  el.focus();
+  // requestFullscreen in user gesture context (button click) always works
+  if (el.requestFullscreen) {
+    el.requestFullscreen().catch(() => {});
+  } else if (el.webkitRequestFullscreen) {
+    el.webkitRequestFullscreen();
   }
 }
 
-function stopPlayer() {
+function stopPlayerInternal(saveProgressNow) {
   if (_playerTimer) { clearInterval(_playerTimer); _playerTimer = null; }
-  const v = document.getElementById("tv-video");
-  if (v) { v.pause(); v.src = ""; v.load(); v.remove(); }
+  const video = document.getElementById("tv-video");
+  if (saveProgressNow && video) saveProgress(video);
+  if (video) { video.pause(); video.src = ""; video.load(); video.remove(); }
   if (_hlsInstance) { _hlsInstance.destroy(); _hlsInstance = null; }
+  _playEps = [];
+}
+
+function stopPlayerFromClose() {
+  stopPlayerInternal(true);
   if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+  else if (document.webkitFullscreenElement) document.webkitExitFullscreen();
   if (_playId) navigateTo("detail", _playId);
   else navigateTo("home");
 }
@@ -252,6 +363,11 @@ async function doSearch(q, page) {
 }
 
 /* -- Utilities -- */
+function imageFallback(w, h) {
+  w = w || 240; h = h || 320;
+  return 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22' + w + '%22 height=%22' + h + '%22%3E%3Crect fill=%22%23222%22/%3E%3C/svg%3E';
+}
+
 async function F(url) {
   const res = await fetch(url);
   if (!res.ok) throw new Error("HTTP " + res.status);
@@ -260,32 +376,37 @@ async function F(url) {
 
 function card(v) {
   const badge = { movie: "Movie", tv: "TV", variety: "Variety", anime: "Anime" }[v.type] || "";
+  const fb = imageFallback();
   return '<div class="video-card" tabindex="0" onclick="hideSearch();navigateTo(\'detail\',' + v.id + ')">' +
-    '<img class="card-img" src="' + (v.cover || "") + '" loading="lazy" onerror="this.src=\'data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%22240%22 height=%22320%22><rect fill=%22%23222%22/></svg>\'">' +
+    '<img class="card-img" src="' + (v.cover || fb) + '" loading="lazy" onerror="this.src=\'' + fb + '\'">' +
     '<div class="card-info"><div class="card-title">' + esc(v.title) + '</div>' +
     '<div class="card-sub">' + (badge ? '<span class="card-badge">' + badge + "</span>" : "") + (v.year ? "<span>" + v.year + "</span>" : "") + (v.rating ? '<span>⭐' + v.rating + "</span>" : "") + "</div></div></div>";
 }
 
 /* -- History -- */
-function loadHistory() {
+async function loadHistory() {
   const el = document.getElementById("view-history");
   el.innerHTML = '<div class="loading"><div class="spinner"></div>Loading...</div>';
-  F("/api/history?limit=100").then(function(data) {
+  try {
+    const data = await F("/api/history?limit=100");
     if (!data || !data.length) { el.innerHTML = '<div class="empty-view">暂无观看记录</div>'; return; }
-    var html = '<div class="card-grid">';
-    data.forEach(function(h) {
-      var label = h.episode_id ? "第" + h.episode_id + "集" : "电影";
-      var onclick = "hideSearch();navigateTo('detail'," + h.video_id + ")";
-      html += '<div class="video-card" tabindex="0" onclick="' + onclick + '">' +
-        '<img class="card-img" src="' + (h.cover || "") + '" loading="lazy">' +
+    let html = '<div class="card-grid">';
+    for (const h of data) {
+      const label = h.episode_id ? "第" + h.episode_id + "集" : "电影";
+      const onClick = "hideSearch();navigateTo('detail'," + h.video_id + ")";
+      const fb = imageFallback();
+      html += '<div class="video-card" tabindex="0" onclick="' + onClick + '">' +
+        '<img class="card-img" src="' + (h.cover || fb) + '" loading="lazy" onerror="this.src=\'' + fb + '\'">' +
         '<div class="card-info"><div class="card-title">' + esc(h.title || '') + '</div>' +
         '<div class="card-sub"><span class="card-badge">' + label + '</span>' +
         (h.progress_seconds ? '<span>' + Math.round(h.progress_seconds / 60) + 'min</span>' : '') +
         '</div></div></div>';
-    });
+    }
     html += '</div>';
     el.innerHTML = html;
-  }).catch(function() { el.innerHTML = '<div class="error-view">加载失败</div>'; });
+  } catch(e) {
+    el.innerHTML = '<div class="error-view">加载失败</div>';
+  }
 }
 
 /* -- Keyboard -- */
@@ -296,23 +417,38 @@ document.addEventListener("keydown", function(e) {
   }
 
   if (_currentView === "player") {
+    // ESC/Backspace: if fullscreen → exit fullscreen only; else → go to detail
     if (e.key === "Escape" || e.key === "Backspace") {
-      stopPlayer();
       e.preventDefault();
+      if (document.fullscreenElement) {
+        // First ESC: just exit fullscreen, keep playing
+        document.exitFullscreen().catch(() => {});
+        return;
+      }
+      if (document.webkitFullscreenElement) {
+        document.webkitExitFullscreen();
+        return;
+      }
+      // Second ESC: stop player, go to detail
+      stopPlayerInternal(true);
+      if (_playId) navigateTo("detail", _playId);
+      else navigateTo("home");
       return;
     }
-    // 方向键在播放器按钮间导航
+    // Arrow keys in player: only navigate buttons if a button is focused
     if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
-      e.preventDefault();
-      var btns = document.querySelectorAll(".player-nav-btn:not([disabled]), .player-close-btn");
-      var cur = document.activeElement;
-      var idx = Array.from(btns).indexOf(cur);
-      if (idx < 0) idx = -1;
-      if (e.key === "ArrowLeft") { btns[Math.max(0, idx - 1)].focus(); }
-      if (e.key === "ArrowRight") { btns[Math.min(btns.length - 1, idx + 1)].focus(); }
+      const cur = document.activeElement;
+      const btns = document.querySelectorAll(".player-nav-btn:not([disabled]), .player-close-btn");
+      const idx = Array.from(btns).indexOf(cur);
+      if (idx >= 0) {
+        e.preventDefault();
+        if (e.key === "ArrowLeft" && idx > 0) btns[idx - 1].focus();
+        if (e.key === "ArrowRight" && idx < btns.length - 1) btns[idx + 1].focus();
+      }
+      // If no button focused, let video handle arrow keys (seeking)
       return;
     }
-    return; // 其他键放行给video
+    return; // Other keys pass to video
   }
 
   const a = document.activeElement;
@@ -355,10 +491,9 @@ function moveFocus(dir) {
   if (best >= 0) items[best].focus();
 }
 
-/* -- Fullscreen exit = go back to player view (not stop) -- */
+/* -- Fullscreen exit → keep player alive, just refocus video -- */
 document.addEventListener("fullscreenchange", function() {
   if (_currentView === "player" && !document.fullscreenElement) {
-    // 聚焦回播放器界面
     const video = document.getElementById("tv-video");
     if (video) video.focus();
   }

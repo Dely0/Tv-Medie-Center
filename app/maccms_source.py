@@ -166,10 +166,6 @@ class MaccmsSource:
                             break
 
         return self._normalize_list(items[:pagesize])
-        data = self._request(params)
-        if not data:
-            return []
-        return self._normalize_list(data.get("list") or [])
 
     def get_detail(self, vod_id_or_url: str) -> tuple[dict, list[dict]]:
         """获取视频详情和剧集列表"""

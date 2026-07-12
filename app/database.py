@@ -218,7 +218,7 @@ def get_home_data() -> dict:
 
 
 def get_watch_history(limit: int = 20) -> list[dict]:
-    """获取观看历史"""
+    """获取观看历史 — 每个视频只返回最新一条记录"""
     with get_db() as db:
         rows = db.execute(
             """
@@ -227,6 +227,11 @@ def get_watch_history(limit: int = 20) -> list[dict]:
             FROM watch_history h
             JOIN videos v ON h.video_id = v.id
             LEFT JOIN episodes e ON h.episode_id = e.episode_num AND e.video_id = h.video_id
+            INNER JOIN (
+              SELECT video_id, MAX(watched_at) AS max_watched
+              FROM watch_history
+              GROUP BY video_id
+            ) latest ON h.video_id = latest.video_id AND h.watched_at = latest.max_watched
             ORDER BY h.watched_at DESC
             LIMIT ?
             """, (limit,)
@@ -236,13 +241,31 @@ def get_watch_history(limit: int = 20) -> list[dict]:
 
 def save_watch_history(video_id: int, episode_id: int | None,
                        progress: float, total: float):
-    """保存/更新观看历史"""
+    """保存/更新观看历史 — 同视频同集覆盖, 不重复插入"""
     with get_db() as db:
-        db.execute(
-            """INSERT INTO watch_history(video_id, episode_id, progress_seconds, total_seconds)
-               VALUES (?, ?, ?, ?)""",
-            (video_id, episode_id, progress, total)
-        )
+        if episode_id is not None:
+            existing = db.execute(
+                "SELECT id FROM watch_history WHERE video_id=? AND episode_id=?",
+                (video_id, episode_id)
+            ).fetchone()
+        else:
+            existing = db.execute(
+                "SELECT id FROM watch_history WHERE video_id=? AND episode_id IS NULL",
+                (video_id,)
+            ).fetchone()
+        if existing:
+            db.execute(
+                """UPDATE watch_history
+                   SET progress_seconds=?, total_seconds=?, watched_at=CURRENT_TIMESTAMP
+                   WHERE id=?""",
+                (progress, total, existing[0])
+            )
+        else:
+            db.execute(
+                """INSERT INTO watch_history(video_id, episode_id, progress_seconds, total_seconds)
+                   VALUES (?, ?, ?, ?)""",
+                (video_id, episode_id, progress, total)
+            )
 
 
 def upsert_video(video: dict) -> int:

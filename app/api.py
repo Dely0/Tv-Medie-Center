@@ -1,7 +1,6 @@
 """FastAPI 路由"""
 import logging
 import subprocess
-from typing import Optional
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -13,7 +12,12 @@ from app.database import (
 from app.crawler import get_status as get_crawl_status, run_crawl
 from app.player import play as mpv_play, stop as mpv_stop, current_info as player_info
 from app.sources import get_all_sources
-from app.maccms_source import get_manager as get_maccms_manager, MaccmsSource
+from app.models import HistoryRecord
+from app.maccms_source import (
+    get_manager as get_maccms_manager,
+    get_maccms_crawlable_sources,
+    MaccmsSource,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
 logger = logging.getLogger("api")
@@ -82,7 +86,6 @@ def api_search(
     local_seen = {r["source_url"] for r in local_results}
 
     # 2. 并行远程搜索（每个源最多 3 秒）
-    from app.maccms_source import get_maccms_crawlable_sources
     sources = get_maccms_crawlable_sources()
     remote_items = []
 
@@ -144,7 +147,6 @@ def api_video_detail(video_id: int):
 
 def _get_source_referer(source_name: str) -> str:
     """根据源名称获取对应的 Referer"""
-    from app.maccms_source import get_manager as get_maccms_manager
     for s in get_maccms_manager().get_all():
         if s.name == source_name:
             return s.base_url + "/"
@@ -178,8 +180,6 @@ def api_play(
 
     # 2. 没有剧集时才尝试从源解析（电影无剧集的情况）
     if not play_url:
-        from app.sources import get_all_sources
-        from app.maccms_source import get_maccms_crawlable_sources
         all_sources = get_all_sources() + get_maccms_crawlable_sources()
         for src in all_sources:
             try:
@@ -233,9 +233,6 @@ def api_player_focus():
     """强制 mpv 窗口获取焦点"""
     try:
         subprocess.run(
-            'cscript //Nologo //B',
-            shell=True, timeout=3, capture_output=True, check=False)
-        subprocess.run(
             'powershell -NoProfile -Command "(new-object -ComObject wscript.shell).AppActivate(\'TV Media Center\')"',
             shell=True, timeout=3, capture_output=True, check=False)
     except Exception:
@@ -252,14 +249,9 @@ def api_history(limit: int = Query(default=20, ge=1, le=100)):
 
 
 @app.post("/api/history")
-def api_save_history(
-    video_id: int,
-    episode_id: Optional[int] = None,
-    progress: float = 0,
-    total: float = 0,
-):
+def api_save_history(record: HistoryRecord):
     """保存观看进度"""
-    save_watch_history(video_id, episode_id, progress, total)
+    save_watch_history(record.video_id, record.episode_id, record.progress_seconds, record.total_seconds)
     return {"success": True}
 
 

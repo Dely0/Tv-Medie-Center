@@ -1,9 +1,6 @@
 """TV Media Center — 入口"""
 import os
 import uvicorn
-import webbrowser
-import threading
-import time
 import logging
 from app.api import app
 from app.database import init_db
@@ -12,12 +9,6 @@ from app.maccms_source import load_sources
 from config import PORT
 
 logger = logging.getLogger("main")
-
-
-def open_browser():
-    """延迟打开浏览器（等服务启动完）"""
-    time.sleep(2)
-    webbrowser.open(f"http://localhost:{PORT}")
 
 
 def main():
@@ -31,9 +22,7 @@ def main():
         logger.info(f"已加载 {count} 个 MacCMS 视频源")
     # 启动爬虫定时器（后台）
     start_crawler_scheduler()
-    # 启动浏览器（后台）
-    threading.Thread(target=open_browser, daemon=True).start()
-    # 启动服务
+    # 启动服务（使用 bat 脚本打开浏览器，会带 --start-fullscreen）
     uvicorn.run(app, host="0.0.0.0", port=PORT, log_level="info")
 
 
