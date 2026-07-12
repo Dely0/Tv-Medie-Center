@@ -45,6 +45,16 @@ function navigateTo(view, param) {
   }
 }
 
+// 进入新视图后自动聚焦第一个可操作元素
+function autoFocusView() {
+  setTimeout(() => {
+    const view = document.querySelector(".view.active");
+    if (!view) return;
+    const first = view.querySelector(".video-card, .play-btn, .episode-btn, .section-more, .browse-tab");
+    if (first) first.focus();
+  }, 50);
+}
+
 async function loadHome() {
   const el = document.getElementById("view-home");
   el.innerHTML = '<div class="loading"><div class="spinner"></div>Loading...</div>';
@@ -61,6 +71,7 @@ async function loadHome() {
       html += '</div></div>';
     }
     el.innerHTML = html;
+    autoFocusView();
   } catch (e) {
     el.innerHTML = '<div class="error-view">Load failed<button class="retry-btn" onclick="loadHome()">Retry</button></div>';
   }
@@ -88,11 +99,12 @@ async function loadBrowsePage(direction) {
     for (const v of data.results) html += card(v);
     html += '</div>';
     html += '<div style="display:flex;justify-content:center;gap:16px;margin-top:24px">' +
-      (_browsePage > 1 ? '<button class="nav-btn" onclick="loadBrowsePage(\'prev\')">◀ 上一页</button>' : '') +
+      (_browsePage > 1 ? '<button class="nav-btn browse-prev" onclick="loadBrowsePage(\'prev\')">◀ 上一页</button>' : '') +
       '<span style="font-size:22px;color:var(--text-dim);padding:10px 16px">第 ' + _browsePage + ' 页</span>' +
-      (data.results.length >= 30 ? '<button class="nav-btn" onclick="loadBrowsePage(\'next\')">下一页 ▶</button>' : '') +
+      (data.results.length >= 30 ? '<button class="nav-btn browse-next" onclick="loadBrowsePage(\'next\')">下一页 ▶</button>' : '') +
       '</div>';
     el.innerHTML = html;
+    autoFocusView();
   } catch (e) {
     el.innerHTML = '<div class="error-view">Load failed</div>';
   }
@@ -129,6 +141,7 @@ async function loadDetail(videoId) {
       (v.description ? '<div class="detail-desc">' + esc(v.description) + '</div>' : "") +
       '<button class="play-btn" onclick="openPlayerAndPlay(' + v.id + ')">▶ Play</button>' +
       epHtml + '</div></div>';
+    autoFocusView();
   } catch (e) {
     el.innerHTML = '<div class="error-view">Load failed</div>';
   }
@@ -390,6 +403,7 @@ async function loadHistory() {
     }
     html += '</div>';
     el.innerHTML = html;
+    autoFocusView();
   } catch(e) {
     el.innerHTML = '<div class="error-view">加载失败</div>';
   }
@@ -402,55 +416,55 @@ document.addEventListener("keydown", function(e) {
     return;
   }
 
+  // ── Player view ──
   if (_currentView === "player") {
-    // ESC/Backspace: if fullscreen → exit fullscreen only; else → go to detail
     if (e.key === "Escape" || e.key === "Backspace") {
       e.preventDefault();
-      if (document.fullscreenElement) {
-        // First ESC: just exit fullscreen, keep playing
-        document.exitFullscreen().catch(() => {});
-        return;
-      }
-      if (document.webkitFullscreenElement) {
-        document.webkitExitFullscreen();
-        return;
-      }
-      // Second ESC: stop player, go to detail
+      if (document.fullscreenElement) { document.exitFullscreen().catch(() => {}); return; }
+      if (document.webkitFullscreenElement) { document.webkitExitFullscreen(); return; }
       stopPlayerInternal(true);
       if (_playId) navigateTo("detail", _playId);
       else navigateTo("home");
       return;
     }
-    // Arrow keys: navigate buttons if focused, otherwise seek video
+    // Arrow keys on buttons → navigate buttons
     if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
       const cur = document.activeElement;
-      const btns = document.querySelectorAll(".player-nav-btn:not([disabled]), .player-close-btn");
-      const idx = Array.from(btns).indexOf(cur);
-      if (idx >= 0) {
+      if (cur && cur.closest(".player-bar")) {
         e.preventDefault();
+        const btns = Array.from(document.querySelectorAll(".player-nav-btn:not([disabled]), .player-close-btn"));
+        const idx = btns.indexOf(cur);
         if (e.key === "ArrowLeft" && idx > 0) btns[idx - 1].focus();
         if (e.key === "ArrowRight" && idx < btns.length - 1) btns[idx + 1].focus();
         return;
       }
-      // No button focused: manual seeking (no video.focus() needed)
+      // Not on a button → seek video
       e.preventDefault();
       const video = document.getElementById("tv-video");
       if (video && video.duration) {
-        const skip = e.key === "ArrowLeft" ? -10 : 10;
-        video.currentTime = Math.max(0, Math.min(video.duration, video.currentTime + skip));
+        video.currentTime = Math.max(0, Math.min(video.duration, video.currentTime + (e.key === "ArrowLeft" ? -10 : 10)));
       }
       return;
     }
-    return; // Other keys pass to video
+    return;
   }
 
-  const a = document.activeElement;
+  // ── Normal views (home / browse / detail / history) ──
+  const cur = document.activeElement;
+
+  // Nav bar buttons: left/right cycle, up/down move into content
+  if (cur && cur.closest("#nav")) {
+    if (e.key === "ArrowRight") { e.preventDefault(); cycleNav(1); return; }
+    if (e.key === "ArrowLeft")  { e.preventDefault(); cycleNav(-1); return; }
+    if (e.key === "ArrowDown")  { e.preventDefault(); focusFirstInView(); return; }
+  }
+
   switch (e.key) {
-    case "ArrowUp": e.preventDefault(); moveFocus("up"); break;
-    case "ArrowDown": e.preventDefault(); moveFocus("down"); break;
-    case "ArrowLeft": e.preventDefault(); if (a && a.closest(".card-grid.scroll-x")) moveFocus("left"); else cycleNav(-1); break;
-    case "ArrowRight": e.preventDefault(); if (a && a.closest(".card-grid.scroll-x")) moveFocus("right"); else cycleNav(1); break;
-    case "Enter": if (a) a.click(); break;
+    case "ArrowUp":    e.preventDefault(); moveFocus("up"); break;
+    case "ArrowDown":  e.preventDefault(); moveFocus("down"); break;
+    case "ArrowLeft":  e.preventDefault(); moveFocus("left"); break;
+    case "ArrowRight": e.preventDefault(); moveFocus("right"); break;
+    case "Enter":      if (cur) cur.click(); break;
     case "Escape": case "Backspace": e.preventDefault(); if (_currentView === "detail") navigateTo("home"); break;
     case "f": case "F": showSearch(); break;
   }
@@ -462,21 +476,40 @@ function cycleNav(dir) {
   btns[(i + dir + btns.length) % btns.length].focus();
 }
 
+function focusFirstInView() {
+  const view = document.querySelector(".view.active");
+  if (!view) return;
+  const first = view.querySelector(".video-card, .play-btn, .episode-btn, .section-more, .browse-tab, .browse-prev, .browse-next");
+  if (first) first.focus();
+}
+
 function moveFocus(dir) {
-  const items = document.querySelectorAll(".video-card, .nav-btn, .search-btn, .play-btn, .episode-btn, .section-more, .player-nav-btn, .player-close-btn");
+  const view = document.querySelector(".view.active");
+  if (!view) return;
+  // Only focusable items within the active view (and nav bar for up)
+  const items = Array.from(view.querySelectorAll(
+    ".video-card, .play-btn, .episode-btn, .section-more, .browse-tab, .browse-prev, .browse-next"
+  ));
+  // Include nav-btn and search-btn when moving up to reach the header
+  if (dir === "up") {
+    const navItems = Array.from(document.querySelectorAll("#nav .nav-btn, .search-btn"));
+    items.unshift(...navItems);
+  }
   if (!items.length) return;
-  let idx = Array.from(items).indexOf(document.activeElement);
+
+  let idx = items.indexOf(document.activeElement);
   if (idx < 0) { items[0].focus(); return; }
+
   const r = document.activeElement.getBoundingClientRect();
   let best = -1, bestDist = Infinity;
   for (let i = 0; i < items.length; i++) {
     if (i === idx) continue;
     const rr = items[i].getBoundingClientRect();
     let dx, dy, ok = false;
-    if (dir === "down") { dy = rr.top - r.bottom; dx = Math.abs(rr.left - r.left); ok = dy >= -10; }
-    if (dir === "up") { dy = r.top - rr.bottom; dx = Math.abs(rr.left - r.left); ok = dy >= -10; }
-    if (dir === "left") { dx = r.left - rr.right; dy = Math.abs(rr.top - r.top); ok = dx >= -10; }
-    if (dir === "right") { dx = rr.left - r.right; dy = Math.abs(rr.top - r.top); ok = dx >= -10; }
+    if (dir === "down")  { dy = rr.top - r.bottom; dx = Math.abs(rr.left - r.left);   ok = dy >= -10; }
+    if (dir === "up")    { dy = r.top - rr.bottom;   dx = Math.abs(rr.left - r.left);   ok = dy >= -10; }
+    if (dir === "left")  { dx = r.left - rr.right;   dy = Math.abs(rr.top - r.top);     ok = dx >= -10; }
+    if (dir === "right") { dx = rr.left - r.right;   dy = Math.abs(rr.top - r.top);     ok = dx >= -10; }
     if (!ok) continue;
     const d = Math.sqrt(dx * dx + dy * dy);
     if (d < bestDist) { best = i; bestDist = d; }
