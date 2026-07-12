@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.pyo
+*.vbs
+data/media.db
+data/media.db-shm
+data/media.db-wal
+data/server.log
+data/mpv.log
+data/mpv.exe
