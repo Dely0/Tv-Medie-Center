@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "tv-media-center",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["main.py"],
+      "port": 8080
+    }
+  ]
+}

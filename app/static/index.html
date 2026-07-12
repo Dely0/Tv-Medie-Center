@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=1920">
+<title>TV Media Center</title>
+<link rel="stylesheet" href="css/tv.css?t=20260713">
+</head>
+<body>
+  <div id="app">
+    <!-- 顶部导航 -->
+    <header id="header">
+      <div class="logo">📺 影视中心</div>
+      <nav id="nav">
+        <button class="nav-btn active" data-view="home" onclick="navigateTo('home')">首页</button>
+        <button class="nav-btn" data-view="browse" data-type="movie" onclick="navigateTo('browse', 'movie')">电影</button>
+        <button class="nav-btn" data-view="browse" data-type="tv" onclick="navigateTo('browse', 'tv')">电视剧</button>
+        <button class="nav-btn" data-view="browse" data-type="variety" onclick="navigateTo('browse', 'variety')">综艺</button>
+        <button class="nav-btn" data-view="browse" data-type="anime" onclick="navigateTo('browse', 'anime')">动漫</button>
+        <button class="nav-btn" data-view="history" onclick="navigateTo('history')">历史记录</button>
+      </nav>
+      <div class="header-actions">
+        <button class="search-btn" onclick="showSearch()" title="搜索">🔍</button>
+      </div>
+    </header>
+
+    <!-- 搜索遮罩 -->
+    <div id="search-overlay" class="search-overlay hidden" onclick="event.target===this&&hideSearch()">
+      <div class="search-box" onclick="event.stopPropagation()">
+        <input id="search-input" type="text" placeholder="搜你想看的电影、电视剧、综艺..." oninput="onSearchInput(this.value)" onkeydown="onSearchKeydown(event)">
+        <button class="search-close" onclick="hideSearch()">✕</button>
+      </div>
+      <div id="search-results" class="search-results"></div>
+      <div id="search-hint" class="search-hint">输入关键词开始搜索</div>
+    </div>
+
+    <!-- 主内容区 -->
+    <main id="main">
+      <div id="view-home" class="view active">
+        <div class="loading"><div class="spinner"></div>正在加载...</div>
+      </div>
+      <div id="view-browse" class="view hidden"></div>
+      <div id="view-detail" class="view hidden"></div>
+      <div id="view-player" class="view hidden"></div>
+      <div id="view-history" class="view hidden"></div>
+    </main>
+
+    <!-- 底部状态 -->
+    <footer id="footer">
+      <span class="footer-hint">↑↓←→ 导航 &nbsp;|&nbsp; Enter 确认 &nbsp;|&nbsp; Esc 返回 &nbsp;|&nbsp; 🔍 搜索</span>
+      <span id="status" class="status"></span>
+    </footer>
+  </div>
+
+<script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+<script src="js/app.js?t=20260714f"></script>
+</body>
+</html>
