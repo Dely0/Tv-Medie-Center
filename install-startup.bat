@@ -20,7 +20,7 @@ echo :wait
 echo timeout /t 2 /nobreak ^>nul
 echo powershell -Command "try{^($wc=New-Object Net.WebClient^).DownloadString('http://localhost:8080/'^)^|Out-Null;exit 0^}catch{exit 1^}" ^>nul 2^>^&1
 echo if errorlevel 1 goto wait
-echo start msedge.exe --kiosk http://localhost:8080
+echo start msedge.exe --start-fullscreen --new-window http://localhost:8080
 ) > %SCRIPT%
 
 echo Startup shortcut created at %SCRIPT%
