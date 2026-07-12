@@ -7,7 +7,6 @@ let _browsePage = 1;
 let _searchPage = 1;
 let _hlsInstance = null;
 let _playerTimer = null;
-let _controlsTimer = null;
 let _playId = 0;       // current video id
 let _playEp = 0;       // current episode number
 let _playEps = [];     // episode list [{num, title}]
@@ -137,29 +136,6 @@ async function loadDetail(videoId) {
 
 /* -- Player -- */
 
-// Mouse idle → hide native controls overlay, keyboard always works
-function setupControlsAutoHide(video) {
-  video.controls = true;
-  let timer = null;
-  function showControls() {
-    video.controls = true;
-    if (timer) clearTimeout(timer);
-    timer = setTimeout(() => { video.controls = false; }, 3000);
-  }
-  video.addEventListener("mousemove", showControls);
-  video.addEventListener("mouseleave", () => {
-    if (timer) clearTimeout(timer);
-    video.controls = false;
-  });
-  video.addEventListener("keydown", () => {
-    // Keyboard seeking keeps controls visible momentarily
-    video.controls = true;
-    if (timer) clearTimeout(timer);
-    timer = setTimeout(() => { video.controls = false; }, 2000);
-  });
-  // Start hidden
-  setTimeout(() => { video.controls = false; }, 2000);
-}
 
 // Initial player setup + first play
 async function openPlayerAndPlay(videoId, episode) {
@@ -199,9 +175,6 @@ async function openPlayerAndPlay(videoId, episode) {
   const video = document.getElementById("tv-video");
   video.volume = 0.2;
 
-  // Native controls auto-hide after idle, keyboard seeking always works
-  setupControlsAutoHide(video);
-
   // Actually play
   await loadAndPlayUrl(videoId, episode);
 
@@ -235,13 +208,10 @@ async function switchEpisode(dir) {
   await loadAndPlayUrl(_playId, _playEp);
   updatePlayerButtons();
 
-  // Refocus video so keyboard seeking (arrow keys) works
   const video = document.getElementById("tv-video");
   if (video) {
-    video.controls = true;
-    if (video.focus) video.focus();
-    if (_controlsTimer) clearTimeout(_controlsTimer);
-    _controlsTimer = setTimeout(() => { if (video) video.controls = false; }, 2000);
+    // Don't focus video — that keeps native controls permanently visible.
+    // Keyboard seeking works via the document keydown handler instead.
     if (video.requestFullscreen) {
       video.requestFullscreen().catch(() => {});
     } else if (video.webkitRequestFullscreen) {
@@ -326,8 +296,6 @@ function saveProgress(video) {
 
 function tryFullscreen(el) {
   if (!el) return;
-  el.focus();
-  // requestFullscreen in user gesture context (button click) always works
   if (el.requestFullscreen) {
     el.requestFullscreen().catch(() => {});
   } else if (el.webkitRequestFullscreen) {
@@ -453,7 +421,7 @@ document.addEventListener("keydown", function(e) {
       else navigateTo("home");
       return;
     }
-    // Arrow keys in player: only navigate buttons if a button is focused
+    // Arrow keys: navigate buttons if focused, otherwise seek video
     if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
       const cur = document.activeElement;
       const btns = document.querySelectorAll(".player-nav-btn:not([disabled]), .player-close-btn");
@@ -462,8 +430,15 @@ document.addEventListener("keydown", function(e) {
         e.preventDefault();
         if (e.key === "ArrowLeft" && idx > 0) btns[idx - 1].focus();
         if (e.key === "ArrowRight" && idx < btns.length - 1) btns[idx + 1].focus();
+        return;
       }
-      // If no button focused, let video handle arrow keys (seeking)
+      // No button focused: manual seeking (no video.focus() needed)
+      e.preventDefault();
+      const video = document.getElementById("tv-video");
+      if (video && video.duration) {
+        const skip = e.key === "ArrowLeft" ? -10 : 10;
+        video.currentTime = Math.max(0, Math.min(video.duration, video.currentTime + skip));
+      }
       return;
     }
     return; // Other keys pass to video
@@ -509,19 +484,7 @@ function moveFocus(dir) {
   if (best >= 0) items[best].focus();
 }
 
-/* -- Fullscreen exit → keep player alive, just refocus video -- */
-document.addEventListener("fullscreenchange", function() {
-  if (_currentView === "player" && !document.fullscreenElement) {
-    const video = document.getElementById("tv-video");
-    if (video) video.focus();
-  }
-});
-document.addEventListener("webkitfullscreenchange", function() {
-  if (_currentView === "player" && !document.webkitFullscreenElement) {
-    const video = document.getElementById("tv-video");
-    if (video) video.focus();
-  }
-});
+/* -- Fullscreen exit → no-op, don't refocus video (that keeps controls visible) -- */
 
 /* -- Start -- */
 navigateTo("home");
