@@ -452,18 +452,36 @@ document.addEventListener("keydown", function(e) {
   // ── Normal views (home / browse / detail / history) ──
   const cur = document.activeElement;
 
-  // Nav bar buttons: left/right cycle, up/down move into content
-  if (cur && cur.closest("#nav")) {
-    if (e.key === "ArrowRight") { e.preventDefault(); cycleNav(1); return; }
-    if (e.key === "ArrowLeft")  { e.preventDefault(); cycleNav(-1); return; }
-    if (e.key === "ArrowDown")  { e.preventDefault(); focusFirstInView(); return; }
+  // Left/Right on episode buttons → navigate between episodes
+  if (cur && cur.closest(".episode-grid") && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+    e.preventDefault();
+    moveFocus(e.key === "ArrowLeft" ? "left" : "right");
+    return;
+  }
+
+  // Left/Right → cycle top nav tabs (TV remote primary axis)
+  if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+    e.preventDefault();
+    cycleNav(e.key === "ArrowLeft" ? -1 : 1);
+    return;
+  }
+
+  // Up/Down → navigate within content area
+  if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+    e.preventDefault();
+    if (cur && cur.closest("#nav")) {
+      focusFirstInView();  // nav → jump into content
+    } else if (e.key === "ArrowUp") {
+      // content → jump to nav
+      const active = document.querySelector("#nav .nav-btn.active");
+      if (active) active.focus();
+    } else {
+      moveFocus("down");
+    }
+    return;
   }
 
   switch (e.key) {
-    case "ArrowUp":    e.preventDefault(); moveFocus("up"); break;
-    case "ArrowDown":  e.preventDefault(); moveFocus("down"); break;
-    case "ArrowLeft":  e.preventDefault(); moveFocus("left"); break;
-    case "ArrowRight": e.preventDefault(); moveFocus("right"); break;
     case "Enter":      if (cur) cur.click(); break;
     case "Escape": case "Backspace": e.preventDefault(); if (_currentView === "detail") navigateTo("home"); break;
     case "f": case "F": showSearch(); break;
@@ -471,9 +489,17 @@ document.addEventListener("keydown", function(e) {
 });
 
 function cycleNav(dir) {
-  const btns = document.querySelectorAll(".nav-btn");
-  let i = Array.from(btns).indexOf(document.querySelector(".nav-btn.active"));
-  btns[(i + dir + btns.length) % btns.length].focus();
+  const btns = document.querySelectorAll("#nav .nav-btn");
+  if (!btns.length) return;
+  let cur = document.querySelector("#nav .nav-btn.active") || btns[0];
+  let i = Array.from(btns).indexOf(cur);
+  let next = (i + dir + btns.length) % btns.length;
+  let btn = btns[next];
+  btn.focus();
+  // 直接激活页面切换, 无需再按 Enter
+  let view = btn.getAttribute("data-view");
+  let type = btn.getAttribute("data-type");
+  if (view) navigateTo(view, type);
 }
 
 function focusFirstInView() {
