@@ -11,3 +11,4 @@ data/mpv.exe
 data/portable_config/cache/
 *.txt
 start.bat
+*.zip
