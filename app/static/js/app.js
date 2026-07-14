@@ -553,6 +553,42 @@ function moveFocus(dir) {
 
 /* -- Fullscreen exit → no-op, don't refocus video (that keeps controls visible) -- */
 
+/* -- 蓝牙遥控器适配 -- */
+// 无痕 history 栈管理: 每次视图切换压栈 + popstate 异步重压
+// 确保遥控器回退键永远在我们的 SPA 内导航, 不离开页面
+var _navDepth = 0;
+
+// navigateTo 时也压一个 history state (保持栈深度)
+var _origNav = navigateTo;
+navigateTo = function(view, param) {
+  _origNav(view, param);
+  _navDepth++;
+  // 每次导航都压栈, 让 browser 的 back 始终有栈可弹
+  window.history.pushState(null, "", window.location.href);
+};
+
+window.addEventListener("popstate", function(e) {
+  // defer pushState after popstate completes (Edge可靠方案)
+  setTimeout(function() {
+    window.history.pushState(null, "", window.location.href);
+  }, 0);
+  // 应用内导航
+  if (_currentView === "player") {
+    stopPlayerInternal(true);
+    if (_playId) { _origNav("detail", _playId); }
+    else { _origNav("home"); }
+  } else if (_currentView === "detail") {
+    _origNav("home");
+  } else {
+    // home/browse: 自动重新压入, 保持当前视图
+  }
+});
+// 初始压入第一层
+window.history.pushState(null, "", window.location.href);
+
+// 遥控器设置键(右键) → 屏蔽
+window.addEventListener("contextmenu", function(e) { e.preventDefault(); });
+
 /* -- Start -- */
 navigateTo("home");
 
