@@ -45,7 +45,6 @@ import logging
 from typing import Optional
 from urllib.parse import urljoin, urlencode, quote
 
-import cloudscraper
 from config import USER_AGENTS, REQUEST_TIMEOUT, SEARCH_TIMEOUT
 
 logger = logging.getLogger("maccms")
@@ -84,7 +83,6 @@ class MaccmsSource:
         self.category_map = category_map or DEFAULT_CATEGORY_IDS.copy()
         self.enabled = enabled
         self.proxy = proxy
-        self._scraper = cloudscraper.create_scraper()
 
     def _headers(self) -> dict:
         return {
