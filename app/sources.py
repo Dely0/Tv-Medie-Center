@@ -18,8 +18,6 @@ r"""
 import re
 import random
 from typing import Optional
-from bs4 import BeautifulSoup
-import cloudscraper
 from config import USER_AGENTS, REQUEST_TIMEOUT
 
 
@@ -31,7 +29,7 @@ class VideoSource:
     enabled: bool = True
 
     def __init__(self):
-        self.scraper = cloudscraper.create_scraper()
+        self.scraper = None
         self.session = None
 
     def _headers(self) -> dict:
@@ -40,8 +38,14 @@ class VideoSource:
             "Referer": self.base_url,
         }
 
+    def _init_scraper(self):
+        if self.scraper is None:
+            import cloudscraper
+            self.scraper = cloudscraper.create_scraper()
+
     def _get(self, url: str, params: dict = None) -> Optional[str]:
         """带重试的 GET 请求"""
+        self._init_scraper()
         for attempt in range(3):
             try:
                 resp = self.scraper.get(
@@ -55,6 +59,7 @@ class VideoSource:
                     return None
 
     def _post(self, url: str, data: dict = None) -> Optional[str]:
+        self._init_scraper()
         for attempt in range(3):
             try:
                 resp = self.scraper.post(
@@ -67,7 +72,8 @@ class VideoSource:
                 if attempt == 2:
                     return None
 
-    def _parse_html(self, html: str) -> BeautifulSoup:
+    def _parse_html(self, html: str):
+        from bs4 import BeautifulSoup
         return BeautifulSoup(html, "html.parser")
 
     def search(self, keyword: str) -> list[dict]:
