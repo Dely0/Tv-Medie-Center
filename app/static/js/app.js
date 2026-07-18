@@ -3,6 +3,7 @@ let _currentView = "home";
 let _currentType = "";
 let _searchTimer = null;
 let _searchFocused = false;
+let _searchResultsActive = false; // 搜索结果浏览模式
 let _browsePage = 1;
 let _searchPage = 1;
 let _hlsInstance = null;
@@ -18,6 +19,8 @@ function esc(s) {
 }
 
 function navigateTo(view, param) {
+  // Hide search overlay when navigating
+  hideSearch();
   // If leaving player, stop it first
   if (_currentView === "player" && view !== "player") {
     stopPlayerInternal(false);
@@ -420,20 +423,18 @@ async function loadHistory() {
 document.addEventListener("keydown", function(e) {
   if (_searchFocused) {
     if (e.key === "Escape") { hideSearch(); e.preventDefault(); return; }
-    // 向下键 → 直接进入第一个搜索结果 (避免焦点被困在搜索框)
-    if (e.key === "ArrowDown" || e.key === "Enter") {
+    // 下键: 焦点移出搜索框进入结果列表 (遮罩保持打开, 用方向键浏览, Enter进入详情)
+    if (e.key === "ArrowDown") {
       e.preventDefault();
       const first = document.querySelector("#search-results .video-card");
       if (first) {
-        const onclick = first.getAttribute("onclick");
-        if (onclick) {
-          hideSearch();
-          eval(onclick);
-        }
+        _searchFocused = false;
+        _searchResultsActive = true;
+        first.focus();
       }
       return;
     }
-    // 搜索时回车触发搜索
+    // 回车: 执行搜索
     if (e.key === "Enter") {
       const inp = document.getElementById("search-input");
       if (inp && inp.value.trim()) { doSearch(inp.value.trim(), 1); }
@@ -473,6 +474,40 @@ document.addEventListener("keydown", function(e) {
       return;
     }
     return;
+  }
+
+  // ── Search results browsing mode (焦点在搜索结果卡片中) ──
+  if (_searchResultsActive) {
+    if (e.key === "Escape") { _searchResultsActive = false; hideSearch(); showSearch(); e.preventDefault(); return; }
+    const cards = Array.from(document.querySelectorAll("#search-results .video-card"));
+    if (!cards.length) { _searchResultsActive = false; return; }
+    const curIdx = cards.indexOf(document.activeElement);
+    
+    if (e.key === "ArrowDown" || e.key === "ArrowRight") {
+      e.preventDefault();
+      if (curIdx < cards.length - 1) cards[curIdx + 1].focus();
+      return;
+    }
+    if (e.key === "ArrowUp" || e.key === "ArrowLeft") {
+      e.preventDefault();
+      if (curIdx > 0) { cards[curIdx - 1].focus(); return; }
+      // 到顶部了 → 回到搜索框
+      _searchResultsActive = false;
+      _searchFocused = true;
+      document.getElementById("search-input").focus();
+      return;
+    }
+    if (e.key === "Enter") {
+      e.preventDefault();
+      hideSearch();
+      _searchResultsActive = false;
+      if (curIdx >= 0 && cards[curIdx]) {
+        const onclick = cards[curIdx].getAttribute("onclick");
+        if (onclick) eval(onclick);
+      }
+      return;
+    }
+    return; // 拦截所有其他键
   }
 
   // ── Normal views (home / browse / detail / history) ──
@@ -575,22 +610,39 @@ function moveFocus(dir) {
   }
 }
 
-/* -- Fullscreen exit → no-op, don't refocus video (that keeps controls visible) -- */
-
 /* -- 遥控器设置键 (鼠标右键) → 呼出搜索 -- */
 window.addEventListener("contextmenu", function(e) {
   e.preventDefault();
   showSearch();
 });
 
-/* -- 安全网: 防止意外离开页面 -- */
+/* -- 回退保护: 阻止页面意外离开 -- */
 window.addEventListener("beforeunload", function(e) {
-  // 播放中或详情页时阻止离开
-  if (_currentView === "player" || _currentView === "detail") {
-    e.preventDefault();
-    e.returnValue = '';
-  }
+  e.preventDefault();
+  e.returnValue = '';
 });
+
+/* -- 遥控器按键检测 & 拦截 -- */
+// 按 F9 显示最近的按键记录
+var _lastKeys = [];
+document.addEventListener("keydown", function(e) {
+  _lastKeys.push(e.key + " code=" + e.code);
+  if (_lastKeys.length > 20) _lastKeys.shift();
+  // 按 F9 弹出最近按键
+  if (e.key === "F9") { alert("Recent keys:\n" + _lastKeys.join("\n")); }
+
+  // 拦截可能的回退键
+  if (e.key === "Backspace" || e.key === "BrowserBack" || e.code === "BrowserBack" || e.which === 8 || e.which === 166) {
+    e.preventDefault();
+    if (_currentView === "player") {
+      if (document.fullscreenElement) { document.exitFullscreen(); return; }
+      stopPlayerInternal(true);
+      if (_playId) navigateTo("detail", _playId); else navigateTo("home");
+    } else if (_currentView === "detail") {
+      navigateTo("home");
+    }
+  }
+}, true);
 
 /* -- Start -- */
 window.location.hash = '#home';

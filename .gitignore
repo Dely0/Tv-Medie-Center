@@ -12,3 +12,8 @@ data/portable_config/cache/
 *.txt
 start.bat
 *.zip
+data/ahk/UX/
+data/ahk/*.chm
+data/ahk/Install.cmd
+data/ahk/WindowSpy.ahk
+data/ahk/Templates/
