@@ -553,39 +553,17 @@ function moveFocus(dir) {
 
 /* -- Fullscreen exit → no-op, don't refocus video (that keeps controls visible) -- */
 
-/* -- 遥控器适配: 监听 popstate 做内部导航 + heartbeat 防栈空 -- */
-// 每次导航后更新 URL 方便调试 (纯 informativ, 实际靠 popstate + heartbeat)
-var _navOrig = navigateTo;
-navigateTo = function(view, param) {
-  _navOrig(view, param);
-  history.replaceState({v: view, p: param}, '', location.pathname + '#' + view + (param ? '/' + param : ''));
-};
+/* -- 右键菜单屏蔽 (蓝牙设置键) -- */
+window.addEventListener("contextmenu", function(e) { e.preventDefault(); });
 
-// popstate: 遥控回退键触发 → 应用内后退
-window.addEventListener("popstate", function(e) {
-  // 1. 立即压回一个状态, 防止浏览器导航离开
-  var ref = {v: _currentView, p: (navigateTo._lastParam)};
-  window.history.pushState(ref, '', window.location.href);
-  // 2. 执行应用内后退
-  if (_currentView === "player") {
-    stopPlayerInternal(true);
-    if (_playId) navigateTo("detail", _playId);
-    else navigateTo("home");
-  } else if (_currentView === "detail") {
-    navigateTo("home");
+/* -- 安全网: 防止意外离开页面 -- */
+window.addEventListener("beforeunload", function(e) {
+  // 播放中或详情页时阻止离开
+  if (_currentView === "player" || _currentView === "detail") {
+    e.preventDefault();
+    e.returnValue = '';
   }
 });
-
-// heartbeat: 每 500ms 压入一个状态, 确保 history 栈永不空
-setInterval(function() {
-  var v = _currentView;
-  if (v) {
-    window.history.pushState({heartbeat: Date.now()}, '', window.location.href);
-  }
-}, 500);
-
-// 右键菜单屏蔽 (蓝牙设置键)
-window.addEventListener("contextmenu", function(e) { e.preventDefault(); });
 
 /* -- Start -- */
 window.location.hash = '#home';

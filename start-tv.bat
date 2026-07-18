@@ -8,4 +8,4 @@ timeout /t 2 /nobreak >nul
 powershell -Command "try{($wc=New-Object Net.WebClient).DownloadString('http://localhost:8080/')|Out-Null;exit 0}catch{exit 1}" >nul 2>&1
 if errorlevel 1 goto wait
 
-start msedge.exe --start-fullscreen --new-window http://localhost:8080
+start msedge.exe --app=http://localhost:8080

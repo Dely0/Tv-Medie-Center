@@ -19,7 +19,7 @@ powershell -Command "try{($wc=New-Object Net.WebClient).DownloadString('http://l
 if errorlevel 1 goto wait
 
 echo Server ready!
-start msedge.exe --start-fullscreen --new-window http://localhost:8080
+start msedge.exe --app=http://localhost:8080
 
 :: 延迟后发送 F11 确保全屏
 timeout /t 2 /nobreak >nul
