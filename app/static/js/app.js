@@ -360,6 +360,11 @@ async function doSearch(q, page) {
     let html = "";
     for (const v of data.results) html += card(v);
     el.innerHTML = html;
+    // 结果出现后让第一个结果可被方向键定位
+    setTimeout(function() {
+      const first = el.querySelector(".video-card");
+      if (first) first.setAttribute("data-search-result", "true");
+    }, 100);
   } catch (e) {}
 }
 
@@ -414,7 +419,26 @@ async function loadHistory() {
 /* -- Keyboard -- */
 document.addEventListener("keydown", function(e) {
   if (_searchFocused) {
-    if (e.key === "Escape") { hideSearch(); e.preventDefault(); }
+    if (e.key === "Escape") { hideSearch(); e.preventDefault(); return; }
+    // 向下键 → 直接进入第一个搜索结果 (避免焦点被困在搜索框)
+    if (e.key === "ArrowDown" || e.key === "Enter") {
+      e.preventDefault();
+      const first = document.querySelector("#search-results .video-card");
+      if (first) {
+        const onclick = first.getAttribute("onclick");
+        if (onclick) {
+          hideSearch();
+          eval(onclick);
+        }
+      }
+      return;
+    }
+    // 搜索时回车触发搜索
+    if (e.key === "Enter") {
+      const inp = document.getElementById("search-input");
+      if (inp && inp.value.trim()) { doSearch(inp.value.trim(), 1); }
+      return;
+    }
     return;
   }
 
@@ -553,8 +577,11 @@ function moveFocus(dir) {
 
 /* -- Fullscreen exit → no-op, don't refocus video (that keeps controls visible) -- */
 
-/* -- 右键菜单屏蔽 (蓝牙设置键) -- */
-window.addEventListener("contextmenu", function(e) { e.preventDefault(); });
+/* -- 遥控器设置键 (鼠标右键) → 呼出搜索 -- */
+window.addEventListener("contextmenu", function(e) {
+  e.preventDefault();
+  showSearch();
+});
 
 /* -- 安全网: 防止意外离开页面 -- */
 window.addEventListener("beforeunload", function(e) {
