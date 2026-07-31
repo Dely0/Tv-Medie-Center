@@ -163,17 +163,29 @@ class MaccmsSource:
         与实际 type_id 不一致）。如果单分类返回数据太少，我们会回退到获取
         全部最新视频然后用 _infer_type 自动分类。
         """
-        cat_id = self.category_map.get(category)
+        cat_ids = self._split_cat_ids(self.category_map.get(category))
         items = []
         total = 0
 
         # 先尝试按分类获取
-        if cat_id:
-            params = {"ac": "videolist", "t": cat_id, "pg": "1", "pagesize": str(pagesize)}
-            data = self._request(params)
-            if data:
-                items = data.get("list") or []
-                total = int(data.get("total", 0))
+        if cat_ids:
+            for cat_id in cat_ids:
+                params = {"ac": "videolist", "t": cat_id, "pg": "1", "pagesize": str(pagesize)}
+                data = self._request(params)
+                if data:
+                    items.extend(data.get("list") or [])
+                    total += int(data.get("total", 0))
+            # 多个分类 ID 可能重复返回同一视频，去重
+            seen = set()
+            uniq = []
+            for i in items:
+                vid = i.get("vod_id")
+                if vid is not None and vid in seen:
+                    continue
+                if vid is not None:
+                    seen.add(vid)
+                uniq.append(i)
+            items = uniq
 
         # 如果分类获取数量太少，回退到全量获取
         if len(items) < 5:
@@ -199,13 +211,20 @@ class MaccmsSource:
 
     def list_page(self, category: str = "movie", page: int = 1, pagesize: int = 100) -> list[dict]:
         """按分类分页获取列表（供轻量回填使用；分类过滤失效时回退全量）"""
-        cat_id = self.category_map.get(category)
+        cat_ids = self._split_cat_ids(self.category_map.get(category))
         params = {"ac": "videolist", "pg": str(page), "pagesize": str(min(pagesize, 100))}
-        if cat_id:
-            params["t"] = cat_id
-        data = self._request(params)
-        items = (data or {}).get("list") or []
-        if len(items) < 5 and cat_id:
+        items = []
+        if cat_ids:
+            per = max(1, min(pagesize, 100) // len(cat_ids))
+            for cat_id in cat_ids:
+                p2 = dict(params, t=cat_id, pagesize=str(per))
+                data = self._request(p2)
+                if data:
+                    items.extend(data.get("list") or [])
+        else:
+            data = self._request(params)
+            items = (data or {}).get("list") or []
+        if len(items) < 5 and cat_ids:
             # 部分源 t 过滤返回异常少，回退全量列表（类型由 _infer_type 推断）
             params.pop("t", None)
             data = self._request(params)
@@ -448,7 +467,10 @@ class MaccmsSource:
         type_id = str(item.get("type_id") or "")
 
         # 反向映射 category_map
-        rev_map = {v: k for k, v in self.category_map.items()}
+        rev_map = {}
+        for k, v in self.category_map.items():
+            for cid in self._split_cat_ids(v):
+                rev_map[cid] = k
         if type_id in rev_map:
             return rev_map[type_id]
 
@@ -473,6 +495,13 @@ class MaccmsSource:
                     return vtype
 
         return "movie"  # 默认
+
+    @staticmethod
+    def _split_cat_ids(cat_id) -> list:
+        """支持逗号分隔的多个分类 ID（部分站点按子分类拆分 type_id）"""
+        if not cat_id:
+            return []
+        return [c.strip() for c in str(cat_id).split(",") if c.strip()]
 
     @staticmethod
     def _safe_int(val) -> Optional[int]:

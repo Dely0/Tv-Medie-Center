@@ -27,6 +27,8 @@ let _hlsBytes = 0;             // 当前 HLS 源累计下载字节
 let _startSeconds = 0;         // 续播起始秒数
 let _heroData = null;          // 当前首页 Hero 数据
 let _probeInfo = null;         // 源站测速结果 {ttfb_ms, speed_mbs}
+let _altSources = [];          // 备用源列表 [{source, play_url}]
+let _altIndex = -1;            // 当前备用源索引
 
 function esc(s) {
   if (!s) return "";
@@ -519,8 +521,7 @@ function startLoadTimer(video) {
       showBufferOSD("加载超时，自动重试…");
       loadAndPlayUrl(_playId, _playEp);
     } else {
-      _playFailed = true;
-      showBufferOSD("加载超时，按 Enter 重试");
+      trySwitchSource(_playId, _playEp);
     }
   }, 20000);
 }
@@ -548,6 +549,8 @@ async function openPlayerAndPlay(videoId, episode, startSeconds) {
   _speedSamples = [];
   _lastSpeed = 0;
   _probeInfo = null;
+  _altSources = [];
+  _altIndex = -1;
   clearLoadTimer();
 
   // 立即构建播放器并同步请求全屏（保持用户手势的同步调用栈，保证全屏激活有效）
@@ -605,6 +608,8 @@ async function switchEpisode(dir) {
   _hlsRetryCount = 0;
   _startSeconds = 0;
   _probeInfo = null;
+  _altSources = [];
+  _altIndex = -1;
   // 同步请求全屏（保留按键手势激活），未在全屏时进入全屏
   const stage = document.getElementById("player-stage");
   if (stage && !document.fullscreenElement && !document.webkitFullscreenElement) {
@@ -615,7 +620,7 @@ async function switchEpisode(dir) {
 }
 
 // Load URL and swap video src (preserves fullscreen)
-async function loadAndPlayUrl(videoId, episode) {
+async function loadAndPlayUrl(videoId, episode, overrideUrl, overrideSource) {
   const params = [];
   if (episode) params.push("episode=" + episode);
   if (_startSeconds > 0) params.push("start_seconds=" + Math.floor(_startSeconds));
@@ -624,8 +629,18 @@ async function loadAndPlayUrl(videoId, episode) {
   hideBufferOSD();
 
   try {
-    const res = await fetch(url, { method: "POST" });
-    const data = await res.json();
+    let data = null;
+    if (overrideUrl) {
+      data = {
+        success: true,
+        play_url: overrideUrl,
+        source: overrideSource || "",
+        episode_title: episode ? "第" + episode + "集" : "",
+      };
+    } else {
+      const res = await fetch(url, { method: "POST" });
+      data = await res.json();
+    }
     if (!data.success) {
       _playFailed = true;
       showBufferOSD("无法获取播放地址，按 Enter 重试");
@@ -658,11 +673,21 @@ async function loadAndPlayUrl(videoId, episode) {
         maxMaxBufferLength: 300,
         backBufferLength: 30,
         enableWorker: true,
+        startLevel: 0,
       });
       _hlsInstance = hls;
       hls.loadSource(data.play_url);
       hls.attachMedia(video);
-      hls.on(Hls.Events.MANIFEST_PARSED, () => video.play().catch(() => {}));
+      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        // 从最低码率档起步：慢网先开播，带宽充足后 ABR 自动升档
+        try {
+          if (hls.levels && hls.levels.length > 1) {
+            hls.currentLevel = 0;
+            hls.nextLevel = 0;
+          }
+        } catch (e) {}
+        video.play().catch(() => {});
+      });
       hls.on(Hls.Events.FRAG_LOADED, (_evt, data) => {
         if (data && data.stats && data.stats.loaded) {
           _hlsBytes += data.stats.loaded;
@@ -692,8 +717,7 @@ async function loadAndPlayUrl(videoId, episode) {
           showBufferOSD("网络波动，正在重试…");
           setTimeout(() => { try { hls.startLoad(); } catch (e) {} }, 1500);
         } else {
-          _playFailed = true;
-          showBufferOSD("播放失败，按 Enter 重试");
+          trySwitchSource(_playId, _playEp);
         }
       });
     } else {
@@ -715,6 +739,39 @@ async function loadAndPlayUrl(videoId, episode) {
     _playFailed = true;
     showBufferOSD("网络请求失败，按 Enter 重试");
   }
+}
+
+// 播放失败时自动查找并切换到备用源
+async function trySwitchSource(videoId, episode) {
+  // 已有备用源列表且还没用完：直接切下一个
+  if (_altIndex >= 0 && _altIndex < _altSources.length - 1) {
+    _altIndex++;
+    _hlsRetryCount = 0;
+    const alt = _altSources[_altIndex];
+    showBufferOSD("已切换到备用源 " + (alt.source || ""));
+    await loadAndPlayUrl(videoId, episode, alt.play_url, alt.source);
+    return;
+  }
+  // 首次失败：向后端请求备用源列表
+  if (_altIndex < 0) {
+    showBufferOSD("当前源不可用，正在查找备用源…");
+    try {
+      const q = episode ? "?episode=" + episode : "";
+      const res = await fetch("/api/video/" + videoId + "/alternates" + q);
+      const data = await res.json();
+      _altSources = ((data && data.alternates) || []).filter(a => a && a.play_url);
+      if (_altSources.length) {
+        _altIndex = 0;
+        _hlsRetryCount = 0;
+        const alt = _altSources[0];
+        showBufferOSD("已切换到备用源 " + (alt.source || ""));
+        await loadAndPlayUrl(videoId, episode, alt.play_url, alt.source);
+        return;
+      }
+    } catch (e) {}
+  }
+  _playFailed = true;
+  showBufferOSD("播放失败，按 Enter 重试");
 }
 
 function updatePlayerButtons() {

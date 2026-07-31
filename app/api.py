@@ -19,6 +19,14 @@ from app.maccms_source import (
     get_maccms_crawlable_sources,
     MaccmsSource,
 )
+
+# 直接以 uvicorn app.api:app 启动时也自动加载 MacCMS 源配置
+import os as _os
+from app.maccms_source import load_sources as _load_sources
+_MACCMS_CFG = _os.path.join(_os.path.dirname(__file__), "..", "data", "maccms_sources.json")
+if _os.path.exists(_MACCMS_CFG):
+    _load_sources(_MACCMS_CFG)
+
 from config import SEARCH_TIMEOUT
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
@@ -269,6 +277,76 @@ def api_play(
         "referer": referer,
         "start_seconds": start_seconds,
     }
+
+
+@app.get("/api/video/{video_id}/alternates")
+def api_video_alternates(
+    video_id: int,
+    episode: int = Query(default=1, ge=1, description="剧集编号"),
+):
+    """当前视频在其他源的备用播放地址（播放失败自动换源时调用）"""
+    detail = get_video_detail(video_id)
+    if not detail:
+        raise HTTPException(404, "视频不存在")
+
+    title = (detail.get("title") or "").strip()
+    if not title:
+        return {"alternates": []}
+
+    current_source = detail.get("source", "")
+    sources = get_maccms_crawlable_sources()
+    alternates = []
+
+    def find_alternate(src):
+        if not src or src.name == current_source:
+            return None
+        try:
+            items = src.search(title, timeout=6)
+            match = None
+            for it in items:
+                t = (it.get("title") or "").strip()
+                if not t:
+                    continue
+                if t == title or (len(t) >= 2 and (t in title or title in t)):
+                    match = it
+                    break
+            if not match:
+                return None
+            _, episodes = src.get_detail(match.get("source_url", ""))
+            if not episodes:
+                return None
+            ep = None
+            if episode:
+                ep = next((e for e in episodes if e.get("episode_num") == episode), None)
+            if not ep:
+                ep = episodes[0]
+            play_url = (ep or {}).get("play_url", "")
+            # 只返回可直接播放的媒体地址（HLS/MP4），排除 HTML 播放页
+            if not play_url or not _is_media_url(play_url):
+                return None
+            return {
+                "source": src.name,
+                "play_url": play_url,
+                "episode_title": (ep or {}).get("episode_title", ""),
+            }
+        except Exception:
+            return None
+
+    if sources:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(sources), 4)) as pool:
+            futures = [pool.submit(find_alternate, s) for s in sources]
+            try:
+                for f in concurrent.futures.as_completed(futures, timeout=15):
+                    try:
+                        r = f.result(timeout=1)
+                    except Exception:
+                        continue
+                    if r:
+                        alternates.append(r)
+            except concurrent.futures.TimeoutError:
+                logger.warning(f"查找备用源超时，已找到 {len(alternates)} 个")
+
+    return {"alternates": alternates[:4]}
 
 
 @app.get("/api/probe")

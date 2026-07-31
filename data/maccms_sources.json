@@ -3,6 +3,17 @@
   "_说明2": "量子资源 (lziapi) 经测试资源最全, 支持多集电视剧完整拉取",
   "sources": [
     {
+      "name": "360资源",
+      "base_url": "https://360zy.com",
+      "enabled": true,
+      "category_map": {
+        "movie": "6,7,8,11,20,25,27,29",
+        "tv": "13,14,15,16,30,31,32,33",
+        "variety": "34,35,36",
+        "anime": "38,39,40"
+      }
+    },
+    {
       "name": "量子资源",
       "base_url": "https://cj.lziapi.com",
       "enabled": true,
