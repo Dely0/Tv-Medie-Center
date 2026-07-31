@@ -78,32 +78,6 @@ def init_db():
                 sort_order INTEGER DEFAULT 0
             );
 
-            -- FTS5 全文搜索
-            CREATE VIRTUAL TABLE IF NOT EXISTS videos_fts USING fts5(
-                title, description, director, actors,
-                content='videos',
-                content_rowid='id',
-                tokenize='unicode61'
-            );
-
-            -- 触发器：保持 FTS 同步
-            CREATE TRIGGER IF NOT EXISTS videos_ai AFTER INSERT ON videos BEGIN
-                INSERT INTO videos_fts(rowid, title, description, director, actors)
-                VALUES (new.id, new.title, new.description, new.director, new.actors);
-            END;
-
-            CREATE TRIGGER IF NOT EXISTS videos_ad AFTER DELETE ON videos BEGIN
-                INSERT INTO videos_fts(videos_fts, rowid, title, description, director, actors)
-                VALUES ('delete', old.id, old.title, old.description, old.director, old.actors);
-            END;
-
-            CREATE TRIGGER IF NOT EXISTS videos_au AFTER UPDATE ON videos BEGIN
-                INSERT INTO videos_fts(videos_fts, rowid, title, description, director, actors)
-                VALUES ('delete', old.id, old.title, old.description, old.director, old.actors);
-                INSERT INTO videos_fts(rowid, title, description, director, actors)
-                VALUES (new.id, new.title, new.description, new.director, new.actors);
-            END;
-
             -- 索引
             CREATE INDEX IF NOT EXISTS idx_videos_type ON videos(type);
             CREATE INDEX IF NOT EXISTS idx_videos_source ON videos(source);
@@ -111,23 +85,79 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_episodes_video ON episodes(video_id);
             CREATE INDEX IF NOT EXISTS idx_history_watched ON watch_history(watched_at DESC);
         """)
+        _init_fts(db)
+
+
+# trigram 分词器支持中文子串匹配（SQLite >= 3.34），否则回退 unicode61 + LIKE
+FTS_TOKENIZER = "trigram" if sqlite3.sqlite_version_info >= (3, 34, 0) else "unicode61"
+
+
+def _init_fts(db: sqlite3.Connection):
+    """创建 FTS5 表与同步触发器；旧库（unicode61）自动迁移为 trigram 并重建索引。"""
+    row = db.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='videos_fts'"
+    ).fetchone()
+    migrated = False
+    if row and FTS_TOKENIZER not in row[0]:
+        # 旧 tokenizer 无法中文子串搜索：先删触发器，再重建表
+        db.executescript("""
+            DROP TRIGGER IF EXISTS videos_ai;
+            DROP TRIGGER IF EXISTS videos_ad;
+            DROP TRIGGER IF EXISTS videos_au;
+            DROP TABLE IF EXISTS videos_fts;
+        """)
+        migrated = True
+
+    db.executescript(f"""
+        CREATE VIRTUAL TABLE IF NOT EXISTS videos_fts USING fts5(
+            title, description, director, actors,
+            content='videos',
+            content_rowid='id',
+            tokenize='{FTS_TOKENIZER}'
+        );
+
+        -- 触发器：保持 FTS 同步
+        CREATE TRIGGER IF NOT EXISTS videos_ai AFTER INSERT ON videos BEGIN
+            INSERT INTO videos_fts(rowid, title, description, director, actors)
+            VALUES (new.id, new.title, new.description, new.director, new.actors);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS videos_ad AFTER DELETE ON videos BEGIN
+            INSERT INTO videos_fts(videos_fts, rowid, title, description, director, actors)
+            VALUES ('delete', old.id, old.title, old.description, old.director, old.actors);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS videos_au AFTER UPDATE ON videos BEGIN
+            INSERT INTO videos_fts(videos_fts, rowid, title, description, director, actors)
+            VALUES ('delete', old.id, old.title, old.description, old.director, old.actors);
+            INSERT INTO videos_fts(rowid, title, description, director, actors)
+            VALUES (new.id, new.title, new.description, new.director, new.actors);
+        END;
+    """)
+    if migrated:
+        db.execute("INSERT INTO videos_fts(videos_fts) VALUES('rebuild')")
 
 
 # ─── 查询方法 ───
 
 def search_videos(keyword: str, page: int = 1, page_size: int = 30) -> tuple[list[dict], int]:
-    """搜索视频，优先 FTS5，回退 LIKE（支持中文）"""
+    """搜索视频：trigram 支持中文子串；短词/特殊字符回退 LIKE"""
     offset = (page - 1) * page_size
+    match_q = None
     with get_db() as db:
-        # 尝试 FTS5
-        try:
-            count_row = db.execute(
-                "SELECT COUNT(*) FROM videos_fts WHERE videos_fts MATCH ?",
-                (keyword,)
-            ).fetchone()
-            total = count_row[0] if count_row else 0
-        except Exception:
-            total = 0
+        total = 0
+        # trigram 至少需要 3 个字符，短词直接用 LIKE
+        if len(keyword) >= 3:
+            # 用短语查询避免关键字中的 FTS 运算符（引号、冒号等）导致语法错误
+            match_q = '"' + keyword.replace('"', '""') + '"'
+            try:
+                count_row = db.execute(
+                    "SELECT COUNT(*) FROM videos_fts WHERE videos_fts MATCH ?",
+                    (match_q,)
+                ).fetchone()
+                total = count_row[0] if count_row else 0
+            except Exception:
+                total = 0
 
         if total > 0:
             rows = db.execute(
@@ -136,21 +166,21 @@ def search_videos(keyword: str, page: int = 1, page_size: int = 30) -> tuple[lis
                 WHERE v.id = fts.rowid AND videos_fts MATCH ?
                 ORDER BY v.updated_at DESC
                 LIMIT ? OFFSET ?
-                """, (keyword, page_size, offset)
+                """, (match_q, page_size, offset)
             ).fetchall()
         else:
-            # FTS 不匹配（中文场景），用 LIKE 保底
+            # FTS 不匹配（短词/特殊字符场景），用 LIKE 保底
             like = f"%{keyword}%"
             count_row = db.execute(
-                "SELECT COUNT(*) FROM videos WHERE title LIKE ? OR description LIKE ? OR actors LIKE ?",
-                (like, like, like)
+                "SELECT COUNT(*) FROM videos WHERE title LIKE ? OR description LIKE ? OR actors LIKE ? OR director LIKE ?",
+                (like, like, like, like)
             ).fetchone()
             total = count_row[0] if count_row else 0
             rows = db.execute(
                 """SELECT * FROM videos
-                   WHERE title LIKE ? OR description LIKE ? OR actors LIKE ?
+                   WHERE title LIKE ? OR description LIKE ? OR actors LIKE ? OR director LIKE ?
                    ORDER BY updated_at DESC LIMIT ? OFFSET ?""",
-                (like, like, like, page_size, offset)
+                (like, like, like, like, page_size, offset)
             ).fetchall()
 
     return [dict(r) for r in rows], total

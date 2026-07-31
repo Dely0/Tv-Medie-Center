@@ -92,31 +92,38 @@ def run_crawl():
     except Exception:
         pass
 
-    with _status_lock:
-        if not sources:
-            set_progress("没有启用的视频源，请检查配置文件")
+    if not sources:
+        logger.info("没有启用的视频源，请检查配置文件")
+        with _status_lock:
             _status["running"] = False
-            return
+            _status["progress"] = "没有启用的视频源，请检查配置文件"
+        return
 
     cat_map = {"movie": "电影", "tv": "电视剧", "variety": "综艺", "anime": "动漫"}
     total_v = 0
     total_e = 0
 
-    for source in sources:
-        set_progress(f"开始爬取源: {source.name}")
-        try:
-            sv, se = _crawl_source(source, cat_map)
-            total_v += sv
-            total_e += se
-        except Exception as e:
-            logger.error(f"爬取源 {source.name} 失败: {e}")
+    try:
+        for source in sources:
+            set_progress(f"开始爬取源: {source.name}")
+            try:
+                sv, se = _crawl_source(source, cat_map)
+                total_v += sv
+                total_e += se
+            except Exception as e:
+                logger.error(f"爬取源 {source.name} 失败: {e}")
 
-    rebuild_fts()
-    elapsed = time.time() - start_time
-    set_progress(f"爬取完成! 耗时 {elapsed:.0f}秒, 共 {total_v} 部视频, {total_e} 集")
-    with _status_lock:
-        _status["last_run"] = time.time()
-        _status["running"] = False
+        rebuild_fts()
+        elapsed = time.time() - start_time
+        set_progress(f"爬取完成! 耗时 {elapsed:.0f}秒, 共 {total_v} 部视频, {total_e} 集")
+        with _status_lock:
+            _status["last_run"] = time.time()
+    except Exception as e:
+        logger.error(f"爬取异常: {e}")
+        set_progress(f"爬取失败: {e}")
+    finally:
+        with _status_lock:
+            _status["running"] = False
 
 
 def start_crawler_scheduler():

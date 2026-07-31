@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=1920">
-<title>TV Media Center v1.0.0</title>
+<title>TV Media Center v1.2.0</title>
 <link rel="stylesheet" href="css/tv.css?t=20260712">
 </head>
 <body>
@@ -27,7 +27,7 @@
     <!-- 搜索遮罩 -->
     <div id="search-overlay" class="search-overlay hidden" onclick="event.target===this&&hideSearch()">
       <div class="search-box" onclick="event.stopPropagation()">
-        <input id="search-input" type="text" placeholder="搜你想看的电影、电视剧、综艺..." oninput="onSearchInput(this.value)" onkeydown="onSearchKeydown(event)">
+        <input id="search-input" type="text" placeholder="搜你想看的电影、电视剧、综艺..." oninput="onSearchInput(this.value)">
         <button class="search-close" onclick="hideSearch()">✕</button>
       </div>
       <div id="search-results" class="search-results"></div>
@@ -53,6 +53,6 @@
   </div>
 
 <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
-<script src="js/app.js?t=20260718a"></script>
+<script src="js/app.js?t=20260718b"></script>
 </body>
 </html>

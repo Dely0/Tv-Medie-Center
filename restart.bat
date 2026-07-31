@@ -3,7 +3,6 @@ chcp 65001 >nul
 cd /d "%~dp0"
 echo Stopping all...
 taskkill /f /im python.exe >nul 2>&1
-taskkill /f /im mpv.exe >nul 2>&1
 taskkill /f /im msedge.exe >nul 2>&1
 
 echo Starting server...

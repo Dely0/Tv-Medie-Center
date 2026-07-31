@@ -422,7 +422,20 @@ async function loadHistory() {
 /* -- Keyboard -- */
 document.addEventListener("keydown", function(e) {
   if (_searchFocused) {
-    if (e.key === "Escape") { hideSearch(); e.preventDefault(); return; }
+    // 回退键（Backspace）在输入框内用于删除字符，不拦截
+    if (e.key === "Backspace") return;
+    if (e.key === "Escape") {
+      e.preventDefault();
+      const inp = document.getElementById("search-input");
+      if (inp && inp.value) {
+        // 遥控回退键映射为 Esc：优先删除最后一个字符，删空后再按才关闭
+        inp.value = inp.value.slice(0, -1);
+        onSearchInput(inp.value);
+      } else {
+        hideSearch();
+      }
+      return;
+    }
     // 下键: 焦点移出搜索框进入结果列表 (遮罩保持打开, 用方向键浏览, Enter进入详情)
     if (e.key === "ArrowDown") {
       e.preventDefault();
@@ -478,7 +491,14 @@ document.addEventListener("keydown", function(e) {
 
   // ── Search results browsing mode (焦点在搜索结果卡片中) ──
   if (_searchResultsActive) {
-    if (e.key === "Escape") { _searchResultsActive = false; hideSearch(); showSearch(); e.preventDefault(); return; }
+    if (e.key === "Escape") {
+      e.preventDefault();
+      // 回到搜索框继续编辑，不清空已输入的关键词
+      _searchResultsActive = false;
+      _searchFocused = true;
+      document.getElementById("search-input").focus();
+      return;
+    }
     const cards = Array.from(document.querySelectorAll("#search-results .video-card"));
     if (!cards.length) { _searchResultsActive = false; return; }
     const curIdx = cards.indexOf(document.activeElement);
@@ -631,9 +651,18 @@ document.addEventListener("keydown", function(e) {
   // 按 F9 弹出最近按键
   if (e.key === "F9") { alert("Recent keys:\n" + _lastKeys.join("\n")); }
 
-  // 拦截可能的回退键
+  // 拦截可能的回退键（搜索框聚焦时不拦截，保留删除字符能力）
   if (e.key === "Backspace" || e.key === "BrowserBack" || e.code === "BrowserBack" || e.which === 8 || e.which === 166) {
+    if (_searchFocused) return;
     e.preventDefault();
+    if (_searchResultsActive) {
+      // 结果列表中的回退：回到搜索框继续编辑
+      _searchResultsActive = false;
+      _searchFocused = true;
+      const inp = document.getElementById("search-input");
+      if (inp) inp.focus();
+      return;
+    }
     if (_currentView === "player") {
       if (document.fullscreenElement) { document.exitFullscreen(); return; }
       stopPlayerInternal(true);

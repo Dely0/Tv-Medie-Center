@@ -1,19 +1,17 @@
 """FastAPI 路由"""
 import logging
-import subprocess
 import concurrent.futures
 import time
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.database import (
     search_videos, get_videos_by_type, get_video_detail,
     get_home_data, get_watch_history, save_watch_history,
-    upsert_video, rebuild_fts,
+    upsert_video,
 )
 from app.crawler import get_status as get_crawl_status, run_crawl
-from app.player import play as mpv_play, stop as mpv_stop, current_info as player_info
 from app.sources import get_all_sources
 from app.models import HistoryRecord
 from app.maccms_source import (
@@ -130,8 +128,6 @@ def api_search(
             })
         except Exception:
             pass
-    if remote_items:
-        rebuild_fts()
     # 4. 重新查本地（包含刚插入的远程结果，带真实 id）
     local_results, total = search_videos(q, page, page_size)
     return {
@@ -197,19 +193,21 @@ def api_video_detail(video_id: int):
 
 # ─── 播放 ───
 
-def _get_source_referer(source_name: str) -> str:
-    """根据源名称获取对应的 Referer"""
-    for s in get_maccms_manager().get_all():
-        if s.name == source_name:
-            return s.base_url + "/"
-    return ""
+_MEDIA_EXTS = (".mp4", ".m3u8", ".flv", ".ts", ".mkv")
+
+
+def _is_media_url(url: str) -> bool:
+    """判断是否为可直接播放的媒体地址（忽略查询参数）"""
+    from urllib.parse import urlparse
+    return urlparse(url).path.lower().endswith(_MEDIA_EXTS)
+
 
 @app.post("/api/video/{video_id}/play")
 def api_play(
     video_id: int,
     episode: int = Query(default=None, description="剧集编号"),
 ):
-    """播放指定视频/剧集"""
+    """解析指定视频/剧集的真实播放地址（实际播放由前端完成）"""
     detail = get_video_detail(video_id)
     if not detail:
         raise HTTPException(404, "视频不存在")
@@ -217,7 +215,6 @@ def api_play(
     title = detail["title"]
     episode_title = ""
     play_url = ""
-    source_name = detail.get("source", "")
     eps = detail.get("episodes") or []
 
     # 1. 如果有剧集，直接取第一集或指定集
@@ -235,27 +232,15 @@ def api_play(
         all_sources = get_all_sources() + get_maccms_crawlable_sources()
         for src in all_sources:
             try:
-                play_url = src.get_play_url(detail["source_url"])
-                if play_url:
-                    break
+                resolved = src.get_play_url(detail["source_url"])
             except Exception:
                 continue
+            # 源解析失败时会把原 URL 原样返回，必须排除详情页地址
+            if resolved and (resolved != detail["source_url"] or _is_media_url(resolved)):
+                play_url = resolved
+                break
         if not play_url:
-            play_url = detail["source_url"]
-
-    if not play_url:
-        raise HTTPException(500, "无法获取播放地址")
-
-    # 确定 Referer（防盗链）
-    referer = _get_source_referer(source_name)
-
-    # 启动 MPV
-    try:
-        mpv_play(play_url, title, episode_title, referer)
-    except FileNotFoundError:
-        raise HTTPException(500, "播放器未安装，请安装 mpv")
-    except Exception as e:
-        raise HTTPException(500, f"启动播放器失败: {e}")
+            raise HTTPException(500, "无法获取播放地址")
 
     return {
         "success": True,
@@ -263,35 +248,6 @@ def api_play(
         "episode_title": episode_title,
         "play_url": play_url,
     }
-
-
-# ─── 播放器控制 ───
-
-@app.get("/api/player/status")
-def api_player_status():
-    """播放器状态"""
-    return player_info()
-
-
-@app.post("/api/player/stop")
-def api_player_stop():
-    """停止播放"""
-    mpv_stop()
-    return {"success": True}
-
-
-@app.post("/api/player/focus")
-def api_player_focus():
-    """强制 mpv 窗口获取焦点"""
-    try:
-        subprocess.run(
-            'powershell -NoProfile -Command "(new-object -ComObject wscript.shell).AppActivate(\'TV Media Center\')"',
-            shell=True, timeout=3, capture_output=True, check=False)
-    except Exception:
-        pass
-    return {"success": True}
-
-
 # ─── 观看历史 ───
 
 @app.get("/api/history")
