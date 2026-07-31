@@ -19,6 +19,9 @@ let _diagTimer = null;         // 诊断面板刷新定时器
 let _bufferSince = 0;          // 本次缓冲开始时间戳
 let _speedSamples = [];        // 网速滑动窗口
 let _lastSpeed = 0;            // 最近平均网速 (bytes/s)
+let _loadTimer = null;         // 播放加载超时定时器
+let _hlsRetryCount = 0;        // HLS 错误重试次数
+let _playFailed = false;       // 播放失败（等待 Enter 重试）
 
 function esc(s) {
   if (!s) return "";
@@ -231,10 +234,10 @@ function ensureDiagElements() {
   document.body.appendChild(panel);
 }
 
-function showBufferOSD() {
+function showBufferOSD(text) {
   ensureDiagElements();
   document.getElementById("buffer-osd").classList.remove("hidden");
-  document.getElementById("buffer-osd-speed").textContent = formatSpeed(_lastSpeed);
+  document.getElementById("buffer-osd-speed").textContent = text !== undefined ? text : formatSpeed(_lastSpeed);
 }
 
 function hideBufferOSD() {
@@ -292,6 +295,7 @@ function toggleDiagPanel() {
 }
 
 function bindBufferEvents(video) {
+  video.addEventListener("loadstart", () => showBufferOSD("加载中…"));
   video.addEventListener("waiting", () => {
     if (!_bufferSince) _bufferSince = Date.now();
     showBufferOSD();
@@ -302,6 +306,7 @@ function bindBufferEvents(video) {
   });
   const endBuffer = () => {
     hideBufferOSD();
+    clearLoadTimer();
     if (_bufferSince) {
       recordBufferEvent((Date.now() - _bufferSince) / 1000);
       _bufferSince = 0;
@@ -309,6 +314,33 @@ function bindBufferEvents(video) {
   };
   video.addEventListener("playing", endBuffer);
   video.addEventListener("canplay", endBuffer);
+}
+
+function clearLoadTimer() {
+  if (_loadTimer) { clearTimeout(_loadTimer); _loadTimer = null; }
+}
+
+function startLoadTimer(video) {
+  clearLoadTimer();
+  _loadTimer = setTimeout(() => {
+    _loadTimer = null;
+    if (!video || !video.currentSrc || (!video.paused && !video.ended)) return;
+    if (_hlsRetryCount < 2) {
+      _hlsRetryCount++;
+      showBufferOSD("加载超时，自动重试…");
+      loadAndPlayUrl(_playId, _playEp);
+    } else {
+      _playFailed = true;
+      showBufferOSD("加载超时，按 Enter 重试");
+    }
+  }, 20000);
+}
+
+async function retryPlay() {
+  _playFailed = false;
+  _hlsRetryCount = 0;
+  hideBufferOSD();
+  await loadAndPlayUrl(_playId, _playEp);
 }
 
 async function openPlayerAndPlay(videoId, episode) {
@@ -320,6 +352,9 @@ async function openPlayerAndPlay(videoId, episode) {
   _currentView = "player";
   _playId = videoId;
   _playEp = episode || 1;
+  _playFailed = false;
+  _hlsRetryCount = 0;
+  clearLoadTimer();
 
   // Show loading
   el.innerHTML = '<div class="loading"><div class="spinner"></div>Loading...</div>';
@@ -381,6 +416,8 @@ async function switchEpisode(dir) {
   _playEp = nextEp;
   updatePlayerButtons();
   document.getElementById("player-title").textContent = "Loading...";
+  _playFailed = false;
+  _hlsRetryCount = 0;
   await loadAndPlayUrl(_playId, _playEp);
   updatePlayerButtons();
 
@@ -400,11 +437,18 @@ async function switchEpisode(dir) {
 async function loadAndPlayUrl(videoId, episode) {
   let url = "/api/video/" + videoId + "/play";
   if (episode) url += "?episode=" + episode;
+  clearLoadTimer();
+  hideBufferOSD();
 
   try {
     const res = await fetch(url, { method: "POST" });
     const data = await res.json();
-    if (!data.success) return;
+    if (!data.success) {
+      _playFailed = true;
+      showBufferOSD("无法获取播放地址，按 Enter 重试");
+      return;
+    }
+    _playFailed = false;
 
     document.getElementById("player-title").textContent = data.episode_title || ("Ep." + episode);
     _currentUrl = data.play_url || "";
@@ -438,12 +482,30 @@ async function loadAndPlayUrl(videoId, episode) {
         if (hls.stats) recordSpeedSample(hls.stats.length || 0, performance.now());
         if (_diagVisible) updateDiagPanel();
       });
+      hls.on(Hls.Events.ERROR, (_evt, data) => {
+        if (!data || !data.fatal) return;
+        clearLoadTimer();
+        if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+          try { hls.recoverMediaError(); } catch (e) {}
+          return;
+        }
+        if (_hlsRetryCount < 3) {
+          _hlsRetryCount++;
+          showBufferOSD("网络波动，正在重试…");
+          setTimeout(() => { try { hls.startLoad(); } catch (e) {} }, 1500);
+        } else {
+          _playFailed = true;
+          showBufferOSD("播放失败，按 Enter 重试");
+        }
+      });
     } else {
       video.src = data.play_url;
       video.play().catch(() => {});
     }
+    startLoadTimer(video);
   } catch (e) {
-    document.getElementById("player-title").textContent = "Play failed";
+    _playFailed = true;
+    showBufferOSD("网络请求失败，按 Enter 重试");
   }
 }
 
@@ -495,10 +557,13 @@ function tryFullscreen(el) {
 
 function stopPlayerInternal(saveProgressNow) {
   if (_playerTimer) { clearInterval(_playerTimer); _playerTimer = null; }
+  clearLoadTimer();
   hideBufferOSD();
   _bufferSince = 0;
   _speedSamples = [];
   _lastSpeed = 0;
+  _playFailed = false;
+  _hlsRetryCount = 0;
   if (_diagVisible) { _diagVisible = false; const p = document.getElementById("diag-panel"); if (p) p.classList.add("hidden"); }
   if (_diagTimer) { clearInterval(_diagTimer); _diagTimer = null; }
   const video = document.getElementById("tv-video");
@@ -651,6 +716,12 @@ document.addEventListener("keydown", function(e) {
     if (e.key === "ArrowUp") {
       e.preventDefault();
       toggleDiagPanel();
+      return;
+    }
+    // 回车: 播放失败时重试
+    if (e.key === "Enter") {
+      e.preventDefault();
+      if (_playFailed) retryPlay();
       return;
     }
     // Arrow keys on buttons → navigate buttons
