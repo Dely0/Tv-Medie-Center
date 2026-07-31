@@ -759,6 +759,8 @@ document.addEventListener("keydown", function(e) {
     }
     // 空格 / 遥控 OK 键: 播放/暂停
     if (e.key === " " || e.key === "Spacebar" || e.code === "Space") {
+      const cur = document.activeElement;
+      if (cur && cur.closest && cur.closest(".player-bar")) return;
       e.preventDefault();
       const video = document.getElementById("tv-video");
       if (video) {
@@ -767,10 +769,18 @@ document.addEventListener("keydown", function(e) {
       }
       return;
     }
-    // 回车: 播放失败时重试
+    // 回车 / 遥控 OK 键: 按钮聚焦时交给按钮，否则失败重试或播放/暂停
     if (e.key === "Enter") {
+      const cur = document.activeElement;
+      if (cur && cur.closest && cur.closest(".player-bar")) return;
       e.preventDefault();
-      if (_playFailed) retryPlay();
+      const video = document.getElementById("tv-video");
+      if (_playFailed) {
+        retryPlay();
+      } else if (video) {
+        if (video.paused) video.play().catch(() => {});
+        else video.pause();
+      }
       return;
     }
     // Arrow keys on buttons → navigate buttons
