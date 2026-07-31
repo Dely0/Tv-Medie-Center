@@ -229,9 +229,9 @@ def get_home_data() -> dict:
         seen = set()
         sections = []
 
-        # 最近更新（一屏内 7 个）
+        # 最近更新（返回 20 个，前端按当前分辨率取列数）
         recent = db.execute(
-            "SELECT * FROM videos ORDER BY updated_at DESC LIMIT 7"
+            "SELECT * FROM videos ORDER BY updated_at DESC LIMIT 20"
         ).fetchall()
         recent_videos = []
         for r in recent:
@@ -241,16 +241,16 @@ def get_home_data() -> dict:
             recent_videos.append(dict(r))
         sections.append({"name": "最近更新", "type": "recent", "videos": recent_videos})
 
-        # 分类栏目：跳过已在前面出现过的影片，每栏最多 7 个
+        # 分类栏目：跳过已在前面出现过的影片，每栏最多 20 个
         label_map = {"movie": "电影", "tv": "电视剧", "variety": "综艺", "anime": "动漫"}
         for type_ in ["movie", "tv", "variety", "anime"]:
             rows = db.execute(
-                "SELECT * FROM videos WHERE type=? ORDER BY updated_at DESC LIMIT 35",
+                "SELECT * FROM videos WHERE type=? ORDER BY updated_at DESC LIMIT 60",
                 (type_,)
             ).fetchall()
             items = []
             for r in rows:
-                if len(items) >= 7:
+                if len(items) >= 20:
                     break
                 if r["id"] in seen:
                     continue

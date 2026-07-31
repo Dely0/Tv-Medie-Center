@@ -540,6 +540,7 @@ html, body {
   display: flex;
   flex-direction: column;
 }
+#view-player.hidden { display: none; }
 #player-stage {
   position: relative;
   flex: 1;

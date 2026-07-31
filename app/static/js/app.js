@@ -89,8 +89,16 @@ async function loadHome() {
     _heroData = data.hero || null;
     let html = "";
     if (_heroData) html += heroHtml(_heroData);
-    for (const sec of data.sections) html += sectionHtml(sec);
+    for (const sec of data.sections) html += sectionHtml(sec, 999);
     el.innerHTML = html;
+    // 按当前分辨率测量一行能放几列，再按列数重排（保证单行满宽不换行）
+    const cols = measureCols(document.querySelector("#view-home .card-grid"));
+    if (cols > 0) {
+      html = "";
+      if (_heroData) html += heroHtml(_heroData);
+      for (const sec of data.sections) html += sectionHtml(sec, cols);
+      el.innerHTML = html;
+    }
     autoFocusView();
   } catch (e) {
     el.innerHTML = '<div class="error-view">加载失败<button class="retry-btn" onclick="loadHome()">重试</button></div>';
@@ -129,15 +137,29 @@ function heroClick(videoId) {
   }
 }
 
-function sectionHtml(sec) {
+function sectionHtml(sec, cols) {
+  const items = (sec.videos || []).slice(0, cols || 20);
   let html = '<div class="section">' +
     '<div class="section-header">' +
     '<div class="section-title">' + esc(sec.name) + '</div>' +
     '<button class="section-more" onclick="navigateTo(\'browse\',\'' + sec.type + '\')">查看全部 ›</button>' +
     '</div><div class="card-grid">';
-  for (const v of sec.videos) html += card(v);
+  for (const v of items) html += card(v);
   html += '</div></div>';
   return html;
+}
+
+function measureCols(grid) {
+  if (!grid) return 0;
+  const cards = grid.querySelectorAll(".video-card");
+  if (!cards.length) return 0;
+  const firstTop = cards[0].getBoundingClientRect().top;
+  let cols = 1;
+  for (let i = 1; i < cards.length; i++) {
+    if (cards[i].getBoundingClientRect().top > firstTop + 4) break;
+    cols++;
+  }
+  return cols;
 }
 
 function toggleDesc() {
