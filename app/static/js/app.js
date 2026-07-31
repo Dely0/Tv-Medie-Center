@@ -12,6 +12,13 @@ let _playId = 0;       // current video id
 let _playEp = 0;       // current episode number
 let _playEps = [];     // episode list [{num, title}]
 let _navCycling = 0; // 导航栏切换Tab时阻止autoFocusView抢焦点(计数器,支持连续快速切换)
+let _currentUrl = "";          // 当前播放地址
+let _currentSourceName = "";   // 当前播放源名称
+let _diagVisible = false;      // 诊断面板是否显示
+let _diagTimer = null;         // 诊断面板刷新定时器
+let _bufferSince = 0;          // 本次缓冲开始时间戳
+let _speedSamples = [];        // 网速滑动窗口
+let _lastSpeed = 0;            // 最近平均网速 (bytes/s)
 
 function esc(s) {
   if (!s) return "";
@@ -156,6 +163,154 @@ async function loadDetail(videoId) {
 
 
 // Initial player setup + first play
+/* -- 缓冲诊断 -- */
+const BUFFER_LOG_KEY = "tv_buffer_log";
+const SPEED_SAMPLES_MAX = 5;
+
+function formatSpeed(bps) {
+  if (!bps || bps <= 0) return "—";
+  if (bps >= 1048576) return (bps / 1048576).toFixed(1) + " MB/s";
+  if (bps >= 1024) return (bps / 1024).toFixed(0) + " KB/s";
+  return bps.toFixed(0) + " B/s";
+}
+
+function recordSpeedSample(bytes, now) {
+  const prev = _speedSamples[_speedSamples.length - 1];
+  if (!prev) { _speedSamples.push({ bytes: bytes, now: now }); return; }
+  const dt = (now - prev.now) / 1000;
+  if (dt <= 0.2) return;
+  const bps = Math.max(0, (bytes - prev.bytes) / dt);
+  _speedSamples.push({ bytes: bytes, now: now, bps: bps });
+  if (_speedSamples.length > SPEED_SAMPLES_MAX) _speedSamples.shift();
+  const recent = _speedSamples.filter(s => s.bps !== undefined);
+  _lastSpeed = recent.length ? recent.reduce((a, s) => a + s.bps, 0) / recent.length : 0;
+}
+
+function getBufferLog() {
+  try { return JSON.parse(localStorage.getItem(BUFFER_LOG_KEY) || "[]"); } catch (e) { return []; }
+}
+
+function saveBufferLog(log) {
+  try { localStorage.setItem(BUFFER_LOG_KEY, JSON.stringify(log.slice(-50))); } catch (e) {}
+}
+
+function recordBufferEvent(durationSec) {
+  const log = getBufferLog();
+  let host = "";
+  try { host = new URL(_currentUrl).host; } catch (e) {}
+  log.push({
+    t: Date.now(),
+    url: _currentUrl,
+    host: host,
+    source: _currentSourceName,
+    speed: Math.round(_lastSpeed),
+    duration: Math.round(durationSec),
+  });
+  saveBufferLog(log);
+}
+
+function ensureDiagElements() {
+  if (document.getElementById("buffer-osd")) return;
+  const osd = document.createElement("div");
+  osd.id = "buffer-osd";
+  osd.className = "buffer-osd hidden";
+  osd.innerHTML = '<span class="buffer-osd-label">缓冲中…</span><span class="buffer-osd-speed" id="buffer-osd-speed"></span>';
+  const panel = document.createElement("div");
+  panel.id = "diag-panel";
+  panel.className = "diag-panel hidden";
+  panel.innerHTML =
+    '<div class="diag-title">播放诊断</div>' +
+    '<div class="diag-row"><span>播放源</span><span id="diag-host">—</span></div>' +
+    '<div class="diag-row"><span>网速</span><span id="diag-speed">—</span></div>' +
+    '<div class="diag-row"><span>缓冲提前</span><span id="diag-buffer">—</span></div>' +
+    '<div class="diag-row"><span>清晰度 / 码率</span><span id="diag-level">—</span></div>' +
+    '<div class="diag-row"><span>进度</span><span id="diag-progress">—</span></div>' +
+    '<div class="diag-title">最近缓冲</div>' +
+    '<div id="diag-events" class="diag-events">暂无缓冲记录</div>';
+  document.body.appendChild(osd);
+  document.body.appendChild(panel);
+}
+
+function showBufferOSD() {
+  ensureDiagElements();
+  document.getElementById("buffer-osd").classList.remove("hidden");
+  document.getElementById("buffer-osd-speed").textContent = formatSpeed(_lastSpeed);
+}
+
+function hideBufferOSD() {
+  const el = document.getElementById("buffer-osd");
+  if (el) el.classList.add("hidden");
+}
+
+function fmtTime(sec) {
+  if (!isFinite(sec) || sec < 0) return "—";
+  const m = Math.floor(sec / 60);
+  const s = Math.floor(sec % 60);
+  return m + ":" + String(s).padStart(2, "0");
+}
+
+function updateDiagPanel() {
+  ensureDiagElements();
+  const video = document.getElementById("tv-video");
+  let host = "—";
+  try { host = new URL(_currentUrl).host; } catch (e) {}
+  document.getElementById("diag-host").textContent = host;
+  document.getElementById("diag-speed").textContent = formatSpeed(_lastSpeed);
+  let ahead = 0;
+  if (video && video.buffered && video.buffered.length) {
+    ahead = video.buffered.end(video.buffered.length - 1) - video.currentTime;
+  }
+  document.getElementById("diag-buffer").textContent = ahead > 0 ? ahead.toFixed(1) + " 秒" : "—";
+  let levelText = "—";
+  if (_hlsInstance && _hlsInstance.levels && _hlsInstance.levels.length) {
+    const lv = _hlsInstance.levels[Math.max(0, _hlsInstance.currentLevel)];
+    if (lv) {
+      levelText = (lv.height ? lv.height + "p" : "?") + (lv.bitrate ? " · " + (lv.bitrate / 1000).toFixed(0) + " kbps" : "");
+    }
+  }
+  document.getElementById("diag-level").textContent = levelText;
+  document.getElementById("diag-progress").textContent = video ? fmtTime(video.currentTime) + " / " + fmtTime(video.duration) : "—";
+  const events = getBufferLog().slice(-5).reverse();
+  document.getElementById("diag-events").textContent = events.length
+    ? events.map(ev => new Date(ev.t).toLocaleTimeString("zh-CN", { hour12: false }) + "  " + (ev.host || "?") + "  " + formatSpeed(ev.speed) + " 缓冲" + ev.duration + "s").join("\n")
+    : "暂无缓冲记录";
+}
+
+function toggleDiagPanel() {
+  ensureDiagElements();
+  _diagVisible = !_diagVisible;
+  const panel = document.getElementById("diag-panel");
+  if (_diagVisible) {
+    updateDiagPanel();
+    panel.classList.remove("hidden");
+    if (_diagTimer) clearInterval(_diagTimer);
+    _diagTimer = setInterval(updateDiagPanel, 1000);
+  } else {
+    panel.classList.add("hidden");
+    if (_diagTimer) { clearInterval(_diagTimer); _diagTimer = null; }
+  }
+}
+
+function bindBufferEvents(video) {
+  video.addEventListener("waiting", () => {
+    if (!_bufferSince) _bufferSince = Date.now();
+    showBufferOSD();
+  });
+  video.addEventListener("stalled", () => {
+    if (!_bufferSince) _bufferSince = Date.now();
+    showBufferOSD();
+  });
+  const endBuffer = () => {
+    hideBufferOSD();
+    if (_bufferSince) {
+      recordBufferEvent((Date.now() - _bufferSince) / 1000);
+      _bufferSince = 0;
+    }
+  };
+  video.addEventListener("playing", endBuffer);
+  video.addEventListener("canplay", endBuffer);
+}
+
 async function openPlayerAndPlay(videoId, episode) {
   // Switch to player view
   document.querySelectorAll(".view").forEach(v => { v.classList.remove("active"); v.classList.add("hidden"); });
@@ -186,12 +341,15 @@ async function openPlayerAndPlay(videoId, episode) {
     '  <button class="player-nav-btn" id="btn-prev" onclick="switchEpisode(\'prev\')">◀ 上一集</button>' +
     '  <span class="player-nav-title" id="player-title">Loading...</span>' +
     '  <button class="player-nav-btn" id="btn-next" onclick="switchEpisode(\'next\')">下一集 ▶</button>' +
+    '  <button class="player-nav-btn" id="btn-diag" onclick="toggleDiagPanel()">ℹ</button>' +
     '  <button class="player-close-btn" onclick="stopPlayerFromClose()">✕</button>' +
     '</div>' +
     '<video id="tv-video" controls autoplay playsinline preload="auto"></video>';
 
   const video = document.getElementById("tv-video");
   video.volume = 0.2;
+  ensureDiagElements();
+  bindBufferEvents(video);
 
   // Actually play
   await loadAndPlayUrl(videoId, episode);
@@ -249,6 +407,11 @@ async function loadAndPlayUrl(videoId, episode) {
     if (!data.success) return;
 
     document.getElementById("player-title").textContent = data.episode_title || ("Ep." + episode);
+    _currentUrl = data.play_url || "";
+    _currentSourceName = data.source || "";
+    _speedSamples = [];
+    _lastSpeed = 0;
+    _bufferSince = 0;
 
     const video = document.getElementById("tv-video");
     if (!video) return;
@@ -261,11 +424,20 @@ async function loadAndPlayUrl(videoId, episode) {
 
     // Load new source
     if (typeof Hls !== "undefined" && Hls.isSupported() && data.play_url.indexOf(".m3u8") > 0) {
-      const hls = new Hls();
+      const hls = new Hls({
+        maxBufferLength: 60,
+        maxMaxBufferLength: 300,
+        backBufferLength: 30,
+        enableWorker: true,
+      });
       _hlsInstance = hls;
       hls.loadSource(data.play_url);
       hls.attachMedia(video);
       hls.on(Hls.Events.MANIFEST_PARSED, () => video.play().catch(() => {}));
+      hls.on(Hls.Events.FRAG_LOADED, () => {
+        if (hls.stats) recordSpeedSample(hls.stats.length || 0, performance.now());
+        if (_diagVisible) updateDiagPanel();
+      });
     } else {
       video.src = data.play_url;
       video.play().catch(() => {});
@@ -323,6 +495,12 @@ function tryFullscreen(el) {
 
 function stopPlayerInternal(saveProgressNow) {
   if (_playerTimer) { clearInterval(_playerTimer); _playerTimer = null; }
+  hideBufferOSD();
+  _bufferSince = 0;
+  _speedSamples = [];
+  _lastSpeed = 0;
+  if (_diagVisible) { _diagVisible = false; const p = document.getElementById("diag-panel"); if (p) p.classList.add("hidden"); }
+  if (_diagTimer) { clearInterval(_diagTimer); _diagTimer = null; }
   const video = document.getElementById("tv-video");
   if (saveProgressNow && video) saveProgress(video);
   if (video) { video.pause(); video.src = ""; video.load(); video.remove(); }
@@ -462,9 +640,17 @@ document.addEventListener("keydown", function(e) {
       e.preventDefault();
       if (document.fullscreenElement) { document.exitFullscreen().catch(() => {}); return; }
       if (document.webkitFullscreenElement) { document.webkitExitFullscreen(); return; }
+      // 诊断面板打开时先关面板，再按一次才退出播放
+      if (_diagVisible) { toggleDiagPanel(); return; }
       stopPlayerInternal(true);
       if (_playId) navigateTo("detail", _playId);
       else navigateTo("home");
+      return;
+    }
+    // 上键: 开关诊断面板
+    if (e.key === "ArrowUp") {
+      e.preventDefault();
+      toggleDiagPanel();
       return;
     }
     // Arrow keys on buttons → navigate buttons
@@ -665,6 +851,7 @@ document.addEventListener("keydown", function(e) {
     }
     if (_currentView === "player") {
       if (document.fullscreenElement) { document.exitFullscreen(); return; }
+      if (_diagVisible) { toggleDiagPanel(); return; }
       stopPlayerInternal(true);
       if (_playId) navigateTo("detail", _playId); else navigateTo("home");
     } else if (_currentView === "detail") {

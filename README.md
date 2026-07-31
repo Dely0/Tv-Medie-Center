@@ -52,6 +52,7 @@
 | `remap-remote.ahk` | 遥控器映射脚本（需 AHK） |
 | `data/maccms_sources.json` | 视频源配置 |
 | `config.py` | 端口等设置（默认 8080） |
+| `app/static/js/hls.min.js` | hls.js 播放内核（本地固定版本 v1.6.16，避免 CDN 不稳定） |
 
 ## 视频源
 

@@ -247,6 +247,7 @@ def api_play(
         "title": title,
         "episode_title": episode_title,
         "play_url": play_url,
+        "source": detail.get("source", ""),
     }
 # ─── 观看历史 ───
 

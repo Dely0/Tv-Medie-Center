@@ -426,6 +426,64 @@ html, body {
   outline: 2px solid #fff; outline-offset: 2px;
 }
 
+/* ─── 缓冲诊断 ─── */
+.buffer-osd {
+  position: fixed;
+  right: 32px;
+  bottom: 84px;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 18px;
+  background: rgba(10, 10, 14, 0.88);
+  border: 1px solid rgba(230, 185, 30, 0.5);
+  border-radius: 8px;
+  font-size: 18px;
+  color: var(--text);
+}
+.buffer-osd.hidden { display: none; }
+.buffer-osd-label { color: var(--accent); }
+
+.diag-panel {
+  position: fixed;
+  right: 32px;
+  bottom: 140px;
+  z-index: 200;
+  width: 420px;
+  padding: 14px 20px 18px;
+  background: rgba(10, 10, 14, 0.92);
+  border: 1px solid #333;
+  border-radius: 10px;
+  font-size: 16px;
+  color: var(--text);
+}
+.diag-panel.hidden { display: none; }
+.diag-title {
+  margin: 8px 0 6px;
+  font-size: 18px;
+  font-weight: bold;
+  color: var(--accent);
+}
+.diag-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 4px 0;
+}
+.diag-row span:last-child {
+  color: var(--text-dim);
+  text-align: right;
+  word-break: break-all;
+}
+.diag-events {
+  max-height: 130px;
+  overflow-y: auto;
+  color: var(--text-dim);
+  font-size: 14px;
+  white-space: pre-line;
+}
+
 /* ─── 底部 ─── */
 #footer {
   display: flex; justify-content: space-between;
