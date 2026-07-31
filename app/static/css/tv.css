@@ -383,6 +383,16 @@ html, body {
 }
 
 /* ─── 浏览器内嵌播放器 ─── */
+#view-player {
+  display: flex;
+  flex-direction: column;
+}
+#player-stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
 #tv-video {
   width: 100%;
   height: 100%;

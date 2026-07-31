@@ -22,6 +22,7 @@ let _lastSpeed = 0;            // 最近平均网速 (bytes/s)
 let _loadTimer = null;         // 播放加载超时定时器
 let _hlsRetryCount = 0;        // HLS 错误重试次数
 let _playFailed = false;       // 播放失败（等待 Enter 重试）
+let _hlsBytes = 0;             // 当前 HLS 源累计下载字节
 
 function esc(s) {
   if (!s) return "";
@@ -213,25 +214,36 @@ function recordBufferEvent(durationSec) {
 }
 
 function ensureDiagElements() {
-  if (document.getElementById("buffer-osd")) return;
-  const osd = document.createElement("div");
-  osd.id = "buffer-osd";
-  osd.className = "buffer-osd hidden";
-  osd.innerHTML = '<span class="buffer-osd-label">缓冲中…</span><span class="buffer-osd-speed" id="buffer-osd-speed"></span>';
-  const panel = document.createElement("div");
-  panel.id = "diag-panel";
-  panel.className = "diag-panel hidden";
-  panel.innerHTML =
-    '<div class="diag-title">播放诊断</div>' +
-    '<div class="diag-row"><span>播放源</span><span id="diag-host">—</span></div>' +
-    '<div class="diag-row"><span>网速</span><span id="diag-speed">—</span></div>' +
-    '<div class="diag-row"><span>缓冲提前</span><span id="diag-buffer">—</span></div>' +
-    '<div class="diag-row"><span>清晰度 / 码率</span><span id="diag-level">—</span></div>' +
-    '<div class="diag-row"><span>进度</span><span id="diag-progress">—</span></div>' +
-    '<div class="diag-title">最近缓冲</div>' +
-    '<div id="diag-events" class="diag-events">暂无缓冲记录</div>';
-  document.body.appendChild(osd);
-  document.body.appendChild(panel);
+  let osd = document.getElementById("buffer-osd");
+  if (!osd) {
+    osd = document.createElement("div");
+    osd.id = "buffer-osd";
+    osd.className = "buffer-osd hidden";
+    osd.innerHTML = '<span class="buffer-osd-label">缓冲中…</span><span class="buffer-osd-speed" id="buffer-osd-speed"></span>';
+    document.body.appendChild(osd);
+  }
+  let panel = document.getElementById("diag-panel");
+  if (!panel) {
+    panel = document.createElement("div");
+    panel.id = "diag-panel";
+    panel.className = "diag-panel hidden";
+    panel.innerHTML =
+      '<div class="diag-title">播放诊断</div>' +
+      '<div class="diag-row"><span>播放源</span><span id="diag-host">—</span></div>' +
+      '<div class="diag-row"><span>网速</span><span id="diag-speed">—</span></div>' +
+      '<div class="diag-row"><span>缓冲提前</span><span id="diag-buffer">—</span></div>' +
+      '<div class="diag-row"><span>清晰度 / 码率</span><span id="diag-level">—</span></div>' +
+      '<div class="diag-row"><span>进度</span><span id="diag-progress">—</span></div>' +
+      '<div class="diag-title">最近缓冲</div>' +
+      '<div id="diag-events" class="diag-events">暂无缓冲记录</div>';
+    document.body.appendChild(panel);
+  }
+  // 全屏的是 #player-stage，OSD/面板必须挂到它下面，全屏时才可见
+  const stage = document.getElementById("player-stage");
+  if (stage) {
+    stage.appendChild(osd);
+    stage.appendChild(panel);
+  }
 }
 
 function showBufferOSD(text) {
@@ -379,7 +391,9 @@ async function openPlayerAndPlay(videoId, episode) {
     '  <button class="player-nav-btn" id="btn-diag" onclick="toggleDiagPanel()">ℹ</button>' +
     '  <button class="player-close-btn" onclick="stopPlayerFromClose()">✕</button>' +
     '</div>' +
-    '<video id="tv-video" controls autoplay playsinline preload="auto"></video>';
+    '<div id="player-stage">' +
+    '<video id="tv-video" controls autoplay playsinline preload="auto"></video>' +
+    '</div>';
 
   const video = document.getElementById("tv-video");
   video.volume = 0.2;
@@ -399,7 +413,8 @@ async function openPlayerAndPlay(videoId, episode) {
   video.addEventListener("ended", onVideoEnded);
 
   // Try fullscreen (user gesture context - this works)
-  tryFullscreen(video);
+  // 全屏容器而不是 video 本身，保证 OSD/诊断面板在全屏时可见
+  tryFullscreen(document.getElementById("player-stage") || video);
 }
 
 // Switch episode without destroying/recreating the video element
@@ -421,14 +436,14 @@ async function switchEpisode(dir) {
   await loadAndPlayUrl(_playId, _playEp);
   updatePlayerButtons();
 
-  const video = document.getElementById("tv-video");
-  if (video) {
+  const stage = document.getElementById("player-stage");
+  if (stage) {
     // Don't focus video — that keeps native controls permanently visible.
     // Keyboard seeking works via the document keydown handler instead.
-    if (video.requestFullscreen) {
-      video.requestFullscreen().catch(() => {});
-    } else if (video.webkitRequestFullscreen) {
-      video.webkitRequestFullscreen();
+    if (stage.requestFullscreen) {
+      stage.requestFullscreen().catch(() => {});
+    } else if (stage.webkitRequestFullscreen) {
+      stage.webkitRequestFullscreen();
     }
   }
 }
@@ -456,6 +471,7 @@ async function loadAndPlayUrl(videoId, episode) {
     _speedSamples = [];
     _lastSpeed = 0;
     _bufferSince = 0;
+    _hlsBytes = 0;
 
     const video = document.getElementById("tv-video");
     if (!video) return;
@@ -478,8 +494,15 @@ async function loadAndPlayUrl(videoId, episode) {
       hls.loadSource(data.play_url);
       hls.attachMedia(video);
       hls.on(Hls.Events.MANIFEST_PARSED, () => video.play().catch(() => {}));
-      hls.on(Hls.Events.FRAG_LOADED, () => {
-        if (hls.stats) recordSpeedSample(hls.stats.length || 0, performance.now());
+      hls.on(Hls.Events.FRAG_LOADED, (_evt, data) => {
+        if (data && data.stats && data.stats.loaded) {
+          _hlsBytes += data.stats.loaded;
+          recordSpeedSample(_hlsBytes, performance.now());
+          const osd = document.getElementById("buffer-osd");
+          if (osd && !osd.classList.contains("hidden")) {
+            document.getElementById("buffer-osd-speed").textContent = formatSpeed(_lastSpeed);
+          }
+        }
         if (_diagVisible) updateDiagPanel();
       });
       hls.on(Hls.Events.ERROR, (_evt, data) => {
@@ -562,6 +585,7 @@ function stopPlayerInternal(saveProgressNow) {
   _bufferSince = 0;
   _speedSamples = [];
   _lastSpeed = 0;
+  _hlsBytes = 0;
   _playFailed = false;
   _hlsRetryCount = 0;
   if (_diagVisible) { _diagVisible = false; const p = document.getElementById("diag-panel"); if (p) p.classList.add("hidden"); }
