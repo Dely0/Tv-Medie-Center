@@ -2,6 +2,7 @@
 import sqlite3
 import json
 import os
+import re
 import threading
 from contextlib import contextmanager
 from config import DB_PATH
@@ -229,6 +230,18 @@ def get_home_data() -> dict:
         seen = set()
         sections = []
 
+        # 为你推荐（有观看历史时才出现）
+        rec = get_recommendations(20)
+        if rec:
+            rec_videos = []
+            for r in rec:
+                if r["id"] in seen:
+                    continue
+                seen.add(r["id"])
+                rec_videos.append(dict(r))
+            if rec_videos:
+                sections.append({"name": "为你推荐", "type": "recommend", "videos": rec_videos})
+
         # 最近更新（返回 20 个，前端按当前分辨率取列数）
         recent = db.execute(
             "SELECT * FROM videos ORDER BY updated_at DESC LIMIT 20"
@@ -309,6 +322,84 @@ def _get_home_hero(db) -> dict | None:
             "total_seconds": 0,
         }
     return None
+
+
+def _split_names(text: str) -> list[str]:
+    """把演员/导演字符串拆成关键词（兼容中英文逗号、顿号、斜杠）"""
+    if not text:
+        return []
+    return [n.strip() for n in re.split(r"[,\uff0c\u3001/|]+", text) if len(n.strip()) >= 2]
+
+
+def get_recommendations(limit: int = 8) -> list[dict]:
+    """为你推荐：按最近观看记录找同类型 / 同演员 / 同导演的未看过影片"""
+    with get_db() as db:
+        watched = db.execute(
+            """SELECT h.video_id, v.type, v.actors, v.director
+               FROM watch_history h
+               JOIN videos v ON v.id = h.video_id
+               GROUP BY h.video_id
+               ORDER BY MAX(h.watched_at) DESC, MAX(h.id) DESC
+               LIMIT 8"""
+        ).fetchall()
+        if not watched:
+            return []
+
+        watched_ids = [r["video_id"] for r in watched]
+        types = list({r["type"] for r in watched if r["type"]})
+        keywords = set()
+        for r in watched:
+            keywords.update(_split_names(r["actors"]))
+            keywords.update(_split_names(r["director"]))
+
+        conds = [f"id NOT IN ({','.join('?' * len(watched_ids))})"]
+        params = list(watched_ids)
+        match_parts = []
+        if types:
+            match_parts.append("type IN (" + ",".join("?" * len(types)) + ")")
+            params.extend(types)
+        for kw in list(keywords)[:30]:
+            match_parts.append("(actors LIKE ? OR director LIKE ?)")
+            params.extend([f"%{kw}%", f"%{kw}%"])
+        if not match_parts:
+            return []
+        conds.append("(" + " OR ".join(match_parts) + ")")
+
+        rows = db.execute(
+            f"SELECT * FROM videos WHERE {' AND '.join(conds)} "
+            "ORDER BY rating DESC, updated_at DESC LIMIT ?",
+            params + [limit]
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_related(video_id: int, limit: int = 8) -> list[dict]:
+    """猜你喜欢：与指定影片同类型 / 同演员 / 同导演，排除自身"""
+    with get_db() as db:
+        v = db.execute("SELECT * FROM videos WHERE id=?", (video_id,)).fetchone()
+        if not v:
+            return []
+
+        keywords = set(_split_names(v["actors"])) | set(_split_names(v["director"]))
+        conds = ["id != ?"]
+        params = [video_id]
+        match_parts = []
+        if v["type"]:
+            match_parts.append("type = ?")
+            params.append(v["type"])
+        for kw in list(keywords)[:20]:
+            match_parts.append("(actors LIKE ? OR director LIKE ?)")
+            params.extend([f"%{kw}%", f"%{kw}%"])
+        if not match_parts:
+            return []
+        conds.append("(" + " OR ".join(match_parts) + ")")
+
+        rows = db.execute(
+            f"SELECT * FROM videos WHERE {' AND '.join(conds)} "
+            "ORDER BY rating DESC, updated_at DESC LIMIT ?",
+            params + [limit]
+        ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def get_watch_history(limit: int = 20) -> list[dict]:

@@ -142,7 +142,7 @@ function sectionHtml(sec, cols) {
   let html = '<div class="section">' +
     '<div class="section-header">' +
     '<div class="section-title">' + esc(sec.name) + '</div>' +
-    '<button class="section-more" onclick="navigateTo(\'browse\',\'' + sec.type + '\')">查看全部 ›</button>' +
+    (sec.type === "recommend" ? "" : '<button class="section-more" onclick="navigateTo(\'browse\',\'' + sec.type + '\')">查看全部 ›</button>') +
     '</div><div class="card-grid">';
   for (const v of items) html += card(v);
   html += '</div></div>';
@@ -160,6 +160,14 @@ function measureCols(grid) {
     cols++;
   }
   return cols;
+}
+
+function fitGridToRow(grid) {
+  if (!grid) return;
+  const cols = measureCols(grid);
+  if (cols <= 0) return;
+  const cards = grid.querySelectorAll(".video-card");
+  for (let i = cols; i < cards.length; i++) cards[i].remove();
 }
 
 function toggleDesc() {
@@ -231,7 +239,7 @@ async function loadDetail(videoId) {
       epHtml += '</div>';
     }
 
-    el.innerHTML =
+    let mainHtml =
       '<div class="detail-layout">' +
       '<div class="detail-poster">' +
       '<div class="detail-poster-ph">' + esc(v.title) + '</div>' +
@@ -243,6 +251,15 @@ async function loadDetail(videoId) {
       (v.description ? '<div class="detail-desc" id="detail-desc">' + esc(v.description) + '</div><button class="desc-toggle" id="desc-toggle" onclick="toggleDesc()">展开</button>' : "") +
       '<button class="play-btn" onclick="openPlayerAndPlay(' + v.id + ')">▶ 播放</button>' +
       epHtml + '</div></div>';
+
+    let relatedHtml = "";
+    if (v.related && v.related.length) {
+      relatedHtml = '<div class="section"><div class="section-header"><div class="section-title">猜你喜欢</div></div><div class="card-grid">';
+      for (const rv of v.related) relatedHtml += card(rv);
+      relatedHtml += '</div></div>';
+    }
+    el.innerHTML = mainHtml + relatedHtml;
+    fitGridToRow(document.querySelector("#view-detail .card-grid"));
     autoFocusView();
   } catch (e) {
     el.innerHTML = '<div class="error-view">加载失败</div>';

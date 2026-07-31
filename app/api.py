@@ -9,7 +9,7 @@ from fastapi.staticfiles import StaticFiles
 from app.database import (
     search_videos, get_videos_by_type, get_video_detail,
     get_home_data, get_watch_history, save_watch_history,
-    upsert_video,
+    upsert_video, get_related,
 )
 from app.crawler import get_status as get_crawl_status, run_crawl
 from app.sources import get_all_sources
@@ -188,6 +188,7 @@ def api_video_detail(video_id: int):
         if fetched:
             detail = get_video_detail(video_id)
 
+    detail["related"] = get_related(video_id)
     return detail
 
 
