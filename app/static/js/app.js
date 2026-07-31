@@ -26,6 +26,7 @@ let _playFailed = false;       // 播放失败（等待 Enter 重试）
 let _hlsBytes = 0;             // 当前 HLS 源累计下载字节
 let _startSeconds = 0;         // 续播起始秒数
 let _heroData = null;          // 当前首页 Hero 数据
+let _probeInfo = null;         // 源站测速结果 {ttfb_ms, speed_mbs}
 
 function esc(s) {
   if (!s) return "";
@@ -312,6 +313,39 @@ function formatSpeed(bps) {
   return bps.toFixed(0) + " B/s";
 }
 
+function osdSpeedText() {
+  if (_lastSpeed > 0) return formatSpeed(_lastSpeed);
+  if (_probeInfo) {
+    const parts = [];
+    if (_probeInfo.speed_mbs && _probeInfo.speed_mbs > 0) {
+      parts.push("源站 " + formatSpeed(Math.round(_probeInfo.speed_mbs * 1048576)));
+    }
+    if (_probeInfo.ttfb_ms) {
+      parts.push("响应 " + (_probeInfo.ttfb_ms / 1000).toFixed(1) + "s");
+    }
+    if (parts.length) return parts.join(" · ");
+  }
+  return "";
+}
+
+async function probeSource(url, referer) {
+  if (!url) return;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const res = await fetch("/api/probe?url=" + encodeURIComponent(url) + "&referer=" + encodeURIComponent(referer || ""));
+      const data = await res.json();
+      _probeInfo = data || null;
+      const osd = document.getElementById("buffer-osd");
+      if (osd && !osd.classList.contains("hidden")) {
+        document.getElementById("buffer-osd-speed").textContent = osdSpeedText();
+      }
+      if (_diagVisible) updateDiagPanel();
+      if (data && (data.ttfb_ms || data.speed_mbs)) return; // 拿到有效数据即停
+    } catch (e) {}
+    if (attempt === 0) await new Promise(r => setTimeout(r, 5000));
+  }
+}
+
 function recordSpeedSample(bytes, now) {
   const prev = _speedSamples[_speedSamples.length - 1];
   if (!prev) { _speedSamples.push({ bytes: bytes, now: now }); return; }
@@ -365,6 +399,7 @@ function ensureDiagElements() {
       '<div class="diag-title">播放诊断</div>' +
       '<div class="diag-row"><span>播放源</span><span id="diag-host">—</span></div>' +
       '<div class="diag-row"><span>网速</span><span id="diag-speed">—</span></div>' +
+      '<div class="diag-row"><span>源站测速</span><span id="diag-probe">—</span></div>' +
       '<div class="diag-row"><span>缓冲提前</span><span id="diag-buffer">—</span></div>' +
       '<div class="diag-row"><span>清晰度 / 码率</span><span id="diag-level">—</span></div>' +
       '<div class="diag-row"><span>进度</span><span id="diag-progress">—</span></div>' +
@@ -383,7 +418,7 @@ function ensureDiagElements() {
 function showBufferOSD(text) {
   ensureDiagElements();
   document.getElementById("buffer-osd").classList.remove("hidden");
-  document.getElementById("buffer-osd-speed").textContent = text !== undefined ? text : formatSpeed(_lastSpeed);
+  document.getElementById("buffer-osd-speed").textContent = text !== undefined ? text : osdSpeedText();
 }
 
 function hideBufferOSD() {
@@ -405,6 +440,14 @@ function updateDiagPanel() {
   try { host = new URL(_currentUrl).host; } catch (e) {}
   document.getElementById("diag-host").textContent = host;
   document.getElementById("diag-speed").textContent = formatSpeed(_lastSpeed);
+  let probeText = "—";
+  if (_probeInfo) {
+    const parts = [];
+    if (_probeInfo.speed_mbs && _probeInfo.speed_mbs > 0) parts.push(formatSpeed(Math.round(_probeInfo.speed_mbs * 1048576)));
+    if (_probeInfo.ttfb_ms) parts.push("响应 " + (_probeInfo.ttfb_ms / 1000).toFixed(1) + "s");
+    if (parts.length) probeText = parts.join(" · ");
+  }
+  document.getElementById("diag-probe").textContent = probeText;
   let ahead = 0;
   if (video && video.buffered && video.buffered.length) {
     ahead = video.buffered.end(video.buffered.length - 1) - video.currentTime;
@@ -501,23 +544,13 @@ async function openPlayerAndPlay(videoId, episode, startSeconds) {
   _startSeconds = startSeconds || 0;
   _playFailed = false;
   _hlsRetryCount = 0;
+  _hlsBytes = 0;
+  _speedSamples = [];
+  _lastSpeed = 0;
+  _probeInfo = null;
   clearLoadTimer();
 
-  // Show loading
-  el.innerHTML = '<div class="loading"><div class="spinner"></div>加载中…</div>';
-
-  // Fetch episodes list
-  try {
-    const v = await F("/api/video/" + videoId);
-    if (v && v.episodes) _playEps = v.episodes;
-  } catch(e) { _playEps = []; }
-
-  // Build player container (preserved across episode switches)
-  const total = _playEps.length;
-  const epIdx = _playEps.findIndex(e => e.episode_num === _playEp);
-  const hasPrev = epIdx > 0;
-  const hasNext = epIdx >= 0 && epIdx < total - 1;
-
+  // 立即构建播放器并同步请求全屏（保持用户手势的同步调用栈，保证全屏激活有效）
   el.innerHTML =
     '<div class="player-bar" id="player-bar">' +
     '  <button class="player-nav-btn" id="btn-prev" onclick="switchEpisode(\'prev\')">◀ 上一集</button>' +
@@ -530,27 +563,28 @@ async function openPlayerAndPlay(videoId, episode, startSeconds) {
     '<div id="player-stage">' +
     '<video id="tv-video" controls controlsList="nofullscreen" autoplay playsinline preload="auto"></video>' +
     '</div>';
+  tryFullscreen(document.getElementById("player-stage"));
 
   const video = document.getElementById("tv-video");
   video.volume = 0.2;
   ensureDiagElements();
   bindBufferEvents(video);
 
+  // Fetch episodes list
+  try {
+    const v = await F("/api/video/" + videoId);
+    if (v && v.episodes) _playEps = v.episodes;
+  } catch(e) { _playEps = []; }
+  updatePlayerButtons();
+
   // Actually play
   await loadAndPlayUrl(videoId, episode);
-
-  // Update button states
-  updatePlayerButtons();
 
   // Start progress saver
   startHistoryTimer(video);
 
   // Auto next on ended
   video.addEventListener("ended", onVideoEnded);
-
-  // Try fullscreen (user gesture context - this works)
-  // 全屏容器而不是 video 本身，保证 OSD/诊断面板在全屏时可见
-  tryFullscreen(document.getElementById("player-stage") || video);
 }
 
 // Switch episode without destroying/recreating the video element
@@ -570,19 +604,14 @@ async function switchEpisode(dir) {
   _playFailed = false;
   _hlsRetryCount = 0;
   _startSeconds = 0;
+  _probeInfo = null;
+  // 同步请求全屏（保留按键手势激活），未在全屏时进入全屏
+  const stage = document.getElementById("player-stage");
+  if (stage && !document.fullscreenElement && !document.webkitFullscreenElement) {
+    tryFullscreen(stage);
+  }
   await loadAndPlayUrl(_playId, _playEp);
   updatePlayerButtons();
-
-  const stage = document.getElementById("player-stage");
-  if (stage) {
-    // Don't focus video — that keeps native controls permanently visible.
-    // Keyboard seeking works via the document keydown handler instead.
-    if (stage.requestFullscreen) {
-      stage.requestFullscreen().catch(() => {});
-    } else if (stage.webkitRequestFullscreen) {
-      stage.webkitRequestFullscreen();
-    }
-  }
 }
 
 // Load URL and swap video src (preserves fullscreen)
@@ -611,6 +640,7 @@ async function loadAndPlayUrl(videoId, episode) {
     _lastSpeed = 0;
     _bufferSince = 0;
     _hlsBytes = 0;
+    _probeInfo = null;
 
     const video = document.getElementById("tv-video");
     if (!video) return;
@@ -636,11 +666,17 @@ async function loadAndPlayUrl(videoId, episode) {
       hls.on(Hls.Events.FRAG_LOADED, (_evt, data) => {
         if (data && data.stats && data.stats.loaded) {
           _hlsBytes += data.stats.loaded;
-          recordSpeedSample(_hlsBytes, performance.now());
-          const osd = document.getElementById("buffer-osd");
-          if (osd && !osd.classList.contains("hidden")) {
-            document.getElementById("buffer-osd-speed").textContent = formatSpeed(_lastSpeed);
-          }
+        } else if (hls.stats && hls.stats.length) {
+          _hlsBytes = hls.stats.length;
+        }
+        recordSpeedSample(_hlsBytes, performance.now());
+        // 分片级瞬时速度兜底：第一个分片完成即可显示网速
+        if (_lastSpeed <= 0 && data && data.stats && data.stats.loaded && data.stats.loading > 100) {
+          _lastSpeed = data.stats.loaded / (data.stats.loading / 1000);
+        }
+        const osd = document.getElementById("buffer-osd");
+        if (osd && !osd.classList.contains("hidden")) {
+          document.getElementById("buffer-osd-speed").textContent = osdSpeedText();
         }
         if (_diagVisible) updateDiagPanel();
       });
@@ -673,6 +709,8 @@ async function loadAndPlayUrl(videoId, episode) {
       else video.addEventListener("loadedmetadata", doSeek, { once: true });
     }
     startLoadTimer(video);
+    // 异步源站测速（拉清单+首分片），不阻塞播放
+    probeSource(data.play_url, data.referer || "");
   } catch (e) {
     _playFailed = true;
     showBufferOSD("网络请求失败，按 Enter 重试");
@@ -747,6 +785,7 @@ function stopPlayerInternal(saveProgressNow) {
   _speedSamples = [];
   _lastSpeed = 0;
   _hlsBytes = 0;
+  _probeInfo = null;
   _playFailed = false;
   _hlsRetryCount = 0;
   if (_diagVisible) { _diagVisible = false; const p = document.getElementById("diag-panel"); if (p) p.classList.add("hidden"); }

@@ -250,8 +250,15 @@ def api_play(
             if resolved and (resolved != detail["source_url"] or _is_media_url(resolved)):
                 play_url = resolved
                 break
-        if not play_url:
-            raise HTTPException(500, "无法获取播放地址")
+    if not play_url:
+        raise HTTPException(500, "无法获取播放地址")
+
+    # 提供 Referer 供前端源站测速使用
+    referer = ""
+    for s in get_maccms_manager().get_all():
+        if s.name == detail.get("source", ""):
+            referer = s.base_url + "/"
+            break
 
     return {
         "success": True,
@@ -259,8 +266,73 @@ def api_play(
         "episode_title": episode_title,
         "play_url": play_url,
         "source": detail.get("source", ""),
+        "referer": referer,
         "start_seconds": start_seconds,
     }
+
+
+@app.get("/api/probe")
+def api_probe(
+    url: str = Query(default="", description="播放地址"),
+    referer: str = Query(default="", description="防盗链来源"),
+):
+    """探测播放源：拉取清单并下载首个分片，返回首字节延迟与下载速度（异步调用，不阻塞播放）"""
+    import random
+    import re
+    import time
+    import urllib.request
+    import urllib.parse
+
+    if not url.startswith(("http://", "https://")):
+        raise HTTPException(400, "无效地址")
+
+    from config import USER_AGENTS
+    headers = {"User-Agent": random.choice(USER_AGENTS)}
+    if referer:
+        headers["Referer"] = referer
+
+    out = {"ttfb_ms": None, "speed_mbs": None, "bytes": 0, "error": None, "segment_url": ""}
+
+    def fetch(u, cap, timeout):
+        t0 = time.time()
+        req = urllib.request.Request(u, headers=headers)
+        resp = urllib.request.urlopen(req, timeout=timeout)
+        ttfb = (time.time() - t0) * 1000
+        data = resp.read(cap)
+        return data, ttfb, time.time() - t0
+
+    try:
+        data, ttfb, _ = fetch(url, 262144, 6)
+        out["ttfb_ms"] = round(ttfb)
+        text = data.decode("utf-8", "replace")
+        seg_url = ""
+        if "#EXT-X-STREAM-INF" in text:
+            # master 清单 → 先取媒体清单，再取分片
+            m = re.search(r"#EXT-X-STREAM-INF[^\n]*\n\s*(\S+)", text)
+            if m:
+                media_url = urllib.parse.urljoin(url, m.group(1).strip())
+                try:
+                    mdata, _, _ = fetch(media_url, 262144, 6)
+                    mtext = mdata.decode("utf-8", "replace")
+                    m2 = re.search(r"#EXTINF[^\n]*\n\s*(\S+)", mtext)
+                    if m2:
+                        seg_url = urllib.parse.urljoin(media_url, m2.group(1).strip())
+                except Exception:
+                    pass
+        elif "#EXTINF" in text:
+            m = re.search(r"#EXTINF[^\n]*\n\s*(\S+)", text)
+            if m:
+                seg_url = urllib.parse.urljoin(url, m.group(1).strip())
+
+        if seg_url:
+            out["segment_url"] = seg_url[:120]
+            sdata, _, dur = fetch(seg_url, 524288, 8)
+            out["bytes"] = len(sdata)
+            if dur > 0:
+                out["speed_mbs"] = round(len(sdata) / dur / 1048576, 2)
+    except Exception as e:
+        out["error"] = str(e)[:80]
+    return out
 # ─── 观看历史 ───
 
 @app.get("/api/history")
