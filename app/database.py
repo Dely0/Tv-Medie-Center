@@ -187,15 +187,23 @@ def search_videos(keyword: str, page: int = 1, page_size: int = 30) -> tuple[lis
 
 
 def get_videos_by_type(type_: str, page: int = 1, page_size: int = 30) -> tuple[list[dict], int]:
-    """按类型分页查询"""
+    """按类型分页查询；type_='recent' 时按更新时间不分类型"""
     offset = (page - 1) * page_size
     with get_db() as db:
-        count_row = db.execute("SELECT COUNT(*) FROM videos WHERE type=?", (type_,)).fetchone()
-        total = count_row[0] if count_row else 0
-        rows = db.execute(
-            "SELECT * FROM videos WHERE type=? ORDER BY updated_at DESC LIMIT ? OFFSET ?",
-            (type_, page_size, offset)
-        ).fetchall()
+        if type_ == "recent":
+            count_row = db.execute("SELECT COUNT(*) FROM videos").fetchone()
+            total = count_row[0] if count_row else 0
+            rows = db.execute(
+                "SELECT * FROM videos ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+                (page_size, offset)
+            ).fetchall()
+        else:
+            count_row = db.execute("SELECT COUNT(*) FROM videos WHERE type=?", (type_,)).fetchone()
+            total = count_row[0] if count_row else 0
+            rows = db.execute(
+                "SELECT * FROM videos WHERE type=? ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+                (type_, page_size, offset)
+            ).fetchall()
     return [dict(r) for r in rows], total
 
 
@@ -215,36 +223,92 @@ def get_video_detail(video_id: int) -> dict | None:
 
 
 def get_home_data() -> dict:
-    """首页数据"""
+    """首页数据：Hero（继续观看/最近更新精选）+ 去重后的栏目"""
     with get_db() as db:
+        hero = _get_home_hero(db)
+        seen = set()
         sections = []
+
+        # 最近更新（一屏内 7 个）
+        recent = db.execute(
+            "SELECT * FROM videos ORDER BY updated_at DESC LIMIT 7"
+        ).fetchall()
+        recent_videos = []
+        for r in recent:
+            if r["id"] in seen:
+                continue
+            seen.add(r["id"])
+            recent_videos.append(dict(r))
+        sections.append({"name": "最近更新", "type": "recent", "videos": recent_videos})
+
+        # 分类栏目：跳过已在前面出现过的影片，每栏最多 7 个
+        label_map = {"movie": "电影", "tv": "电视剧", "variety": "综艺", "anime": "动漫"}
         for type_ in ["movie", "tv", "variety", "anime"]:
             rows = db.execute(
-                "SELECT * FROM videos WHERE type=? ORDER BY updated_at DESC LIMIT 20",
+                "SELECT * FROM videos WHERE type=? ORDER BY updated_at DESC LIMIT 35",
                 (type_,)
             ).fetchall()
-            if rows:
-                label_map = {
-                    "movie": "电影", "tv": "电视剧",
-                    "variety": "综艺", "anime": "动漫"
-                }
-                sections.append({
-                    "name": label_map.get(type_, type_),
-                    "type": type_,
-                    "videos": [dict(r) for r in rows]
-                })
+            items = []
+            for r in rows:
+                if len(items) >= 7:
+                    break
+                if r["id"] in seen:
+                    continue
+                seen.add(r["id"])
+                items.append(dict(r))
+            if items:
+                sections.append({"name": label_map[type_], "type": type_, "videos": items})
 
-        # 最近更新
-        recent = db.execute(
-            "SELECT * FROM videos ORDER BY updated_at DESC LIMIT 20"
-        ).fetchall()
-        sections.insert(0, {
-            "name": "最近更新",
-            "type": "recent",
-            "videos": [dict(r) for r in recent]
-        })
+    return {"hero": hero, "sections": sections}
 
-    return {"sections": sections}
+
+def _get_home_hero(db) -> dict | None:
+    """最近观看记录（有进度）作为继续观看；否则取最近更新精选"""
+    row = db.execute(
+        """SELECT h.video_id, h.episode_id, h.progress_seconds, h.total_seconds,
+                  v.title, v.cover, v.type
+           FROM watch_history h
+           JOIN videos v ON v.id = h.video_id
+           ORDER BY h.watched_at DESC, h.id DESC
+           LIMIT 1"""
+    ).fetchone()
+    if row and (row["progress_seconds"] or 0) > 0:
+        episode_num = row["episode_id"]
+        episode_title = ""
+        if episode_num is not None:
+            ep = db.execute(
+                "SELECT episode_title FROM episodes WHERE video_id=? AND episode_num=?",
+                (row["video_id"], episode_num)
+            ).fetchone()
+            episode_title = ep["episode_title"] if ep else ""
+        return {
+            "kind": "continue",
+            "video_id": row["video_id"],
+            "title": row["title"],
+            "cover": row["cover"] or "",
+            "type": row["type"],
+            "episode_num": episode_num,
+            "episode_title": episode_title or "",
+            "progress_seconds": float(row["progress_seconds"] or 0),
+            "total_seconds": float(row["total_seconds"] or 0),
+        }
+
+    recent = db.execute(
+        "SELECT * FROM videos WHERE cover != '' ORDER BY updated_at DESC LIMIT 1"
+    ).fetchone()
+    if recent:
+        return {
+            "kind": "recent",
+            "video_id": recent["id"],
+            "title": recent["title"],
+            "cover": recent["cover"] or "",
+            "type": recent["type"],
+            "episode_num": None,
+            "episode_title": "",
+            "progress_seconds": 0,
+            "total_seconds": 0,
+        }
+    return None
 
 
 def get_watch_history(limit: int = 20) -> list[dict]:

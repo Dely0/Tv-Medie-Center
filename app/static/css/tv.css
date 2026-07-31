@@ -1,14 +1,14 @@
 /* ─── TV 大屏样式 ─── */
 :root {
-  --bg: #141414;
-  --bg-card: #1f1f1f;
-  --bg-focus: #2a2a2a;
-  --text: #e0e0e0;
-  --text-dim: #888;
+  --bg: #0E0E12;
+  --bg-card: #191A20;
+  --bg-focus: #22242C;
+  --text: #E8E8EA;
+  --text-dim: #9A9AA2;
   --accent: #e6b91e;
   --accent2: #c0392b;
   --border-focus: #e6b91e;
-  --shadow: rgba(0,0,0,0.5);
+  --shadow: rgba(0,0,0,0.6);
 }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -31,7 +31,7 @@ html, body {
 #header {
   display: flex; align-items: center;
   padding: 16px 40px;
-  background: linear-gradient(180deg, #1a1a2e 0%, #141414 100%);
+  background: linear-gradient(180deg, #15161C 0%, #0E0E12 100%);
   flex-shrink: 0;
   z-index: 10;
 }
@@ -67,6 +67,96 @@ html, body {
   outline: none;
   border-color: var(--border-focus);
   box-shadow: 0 0 0 3px rgba(230,185,30,0.3);
+}
+
+/* ─── Hero 焦点位 ─── */
+.hero-card {
+  position: relative;
+  height: 400px;
+  border-radius: 14px;
+  overflow: hidden;
+  margin-bottom: 40px;
+  cursor: pointer;
+  border: 2px solid transparent;
+}
+.hero-card:focus-visible {
+  outline: none;
+  border-color: var(--border-focus);
+  box-shadow: 0 8px 40px rgba(230, 185, 30, 0.25);
+}
+.hero-bg {
+  position: absolute;
+  inset: 0;
+  background-size: cover;
+  background-position: center 30%;
+  background-color: #14151A;
+}
+.hero-mask {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, rgba(10, 10, 14, 0.94) 0%, rgba(10, 10, 14, 0.55) 55%, rgba(10, 10, 14, 0.15) 100%);
+}
+.hero-info {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 40px 48px;
+  max-width: 62%;
+}
+.hero-badge {
+  align-self: flex-start;
+  padding: 4px 14px;
+  border-radius: 6px;
+  font-size: 15px;
+  background: rgba(230, 185, 30, 0.18);
+  color: var(--accent);
+  margin-bottom: 14px;
+}
+.hero-title {
+  font-size: 42px;
+  font-weight: bold;
+  color: var(--text);
+  margin-bottom: 12px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.hero-sub {
+  font-size: 20px;
+  color: var(--text-dim);
+  margin-bottom: 20px;
+}
+.hero-progress {
+  width: 320px;
+  max-width: 80%;
+  height: 6px;
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 3px;
+  overflow: hidden;
+  margin-bottom: 24px;
+}
+.hero-progress-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 3px;
+}
+.hero-btn {
+  align-self: flex-start;
+  padding: 14px 44px;
+  font-size: 24px;
+  font-weight: bold;
+  background: var(--accent);
+  color: #000;
+  border: none;
+  border-radius: 10px;
+  cursor: pointer;
+}
+.hero-btn:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: 3px;
 }
 
 /* ─── 主内容区 ─── */
@@ -179,37 +269,58 @@ html, body {
 .video-card {
   width: 240px; flex-shrink: 0;
   background: var(--bg-card);
-  border-radius: 10px;
+  border-radius: 12px;
   overflow: hidden;
   cursor: pointer;
   transition: transform 0.15s, box-shadow 0.15s;
   border: 2px solid transparent;
 }
+.card-grid .video-card { width: 100%; }
 .video-card:focus-visible {
   outline: none;
   border-color: var(--border-focus);
-  transform: scale(1.05);
+  transform: scale(1.04);
   box-shadow: 0 8px 30px rgba(230,185,30,0.25);
 }
 .video-card:hover {
   transform: scale(1.03);
   box-shadow: 0 4px 20px var(--shadow);
 }
+.card-img-wrap {
+  position: relative;
+  aspect-ratio: 3/4;
+  overflow: hidden;
+  background: #15161C;
+}
+.card-placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  text-align: center;
+  font-size: 16px;
+  color: var(--text-dim);
+  background: linear-gradient(160deg, #1C1E26 0%, #121318 100%);
+}
 .video-card .card-img {
-  width: 100%; aspect-ratio: 3/4;
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
   object-fit: cover;
   display: block;
-  background: #222;
 }
 .video-card .card-info {
   padding: 12px;
 }
 .video-card .card-title {
-  font-size: 18px; font-weight: 500;
+  font-size: 19px; font-weight: 500;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .video-card .card-sub {
-  font-size: 14px; color: var(--text-dim);
+  font-size: 15px; color: var(--text-dim);
   margin-top: 4px;
   display: flex; gap: 8px;
 }
@@ -228,12 +339,29 @@ html, body {
 }
 .detail-poster {
   width: 360px; flex-shrink: 0;
+  position: relative;
+  aspect-ratio: 3/4;
+}
+.detail-poster-ph {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  text-align: center;
+  font-size: 20px;
+  color: var(--text-dim);
+  background: linear-gradient(160deg, #1C1E26, #121318);
+  border-radius: 12px;
 }
 .detail-poster img {
-  width: 100%; border-radius: 12px;
-  background: #222;
-  aspect-ratio: 3/4;
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
   object-fit: cover;
+  border-radius: 12px;
 }
 .detail-info { flex: 1; }
 .detail-title {
@@ -249,9 +377,29 @@ html, body {
 .detail-desc {
   font-size: 18px; line-height: 1.7;
   color: var(--text-dim);
+  margin-bottom: 8px;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.detail-desc.expanded {
+  -webkit-line-clamp: unset;
+  overflow: visible;
+}
+.desc-toggle {
+  background: none;
+  border: none;
+  color: var(--accent);
+  font-size: 16px;
+  cursor: pointer;
+  padding: 0;
   margin-bottom: 24px;
-  max-height: 120px;
-  overflow-y: auto;
+  font-family: inherit;
+}
+.desc-toggle:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 3px;
 }
 .play-btn {
   display: inline-block;
@@ -273,6 +421,11 @@ html, body {
 }
 
 /* 剧集列表 */
+.episodes-title {
+  font-size: 22px;
+  font-weight: bold;
+  margin: 16px 0 12px;
+}
 .episode-grid {
   display: flex; flex-wrap: wrap; gap: 10px;
   margin-bottom: 40px;

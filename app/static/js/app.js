@@ -23,10 +23,16 @@ let _loadTimer = null;         // 播放加载超时定时器
 let _hlsRetryCount = 0;        // HLS 错误重试次数
 let _playFailed = false;       // 播放失败（等待 Enter 重试）
 let _hlsBytes = 0;             // 当前 HLS 源累计下载字节
+let _startSeconds = 0;         // 续播起始秒数
+let _heroData = null;          // 当前首页 Hero 数据
 
 function esc(s) {
   if (!s) return "";
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function escAttr(s) {
+  return esc(s).replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
 
 function navigateTo(view, param) {
@@ -66,37 +72,92 @@ function autoFocusView() {
     if (_navCycling > 0) { _navCycling--; return; }
     const view = document.querySelector(".view.active");
     if (!view) return;
-    const first = view.querySelector(".video-card, .play-btn, .episode-btn, .section-more, .browse-tab");
-    if (first) first.focus();
+    const first = view.querySelector(".hero-card, .video-card, .play-btn, .episode-btn, .section-more, .browse-tab");
+    if (first) focusWithScroll(first);
   }, 50);
 }
 
 async function loadHome() {
   const el = document.getElementById("view-home");
-  el.innerHTML = '<div class="loading"><div class="spinner"></div>Loading...</div>';
+  el.innerHTML = '<div class="loading"><div class="spinner"></div>加载中…</div>';
   try {
     const data = await F("/api/home");
     if (!data.sections || !data.sections.length) {
-      el.innerHTML = '<div class="empty-view">No data</div>';
+      el.innerHTML = '<div class="empty-view">暂无内容</div>';
       return;
     }
+    _heroData = data.hero || null;
     let html = "";
-    for (const sec of data.sections) {
-      html += '<div class="section"><div class="section-header"><div class="section-title">' + sec.name + '</div></div><div class="card-grid scroll-x">';
-      for (const v of sec.videos) html += card(v);
-      html += '</div></div>';
-    }
+    if (_heroData) html += heroHtml(_heroData);
+    for (const sec of data.sections) html += sectionHtml(sec);
     el.innerHTML = html;
     autoFocusView();
   } catch (e) {
-    el.innerHTML = '<div class="error-view">Load failed<button class="retry-btn" onclick="loadHome()">Retry</button></div>';
+    el.innerHTML = '<div class="error-view">加载失败<button class="retry-btn" onclick="loadHome()">重试</button></div>';
   }
+}
+
+function heroHtml(h) {
+  const pct = h.total_seconds > 0 ? Math.max(0, Math.min(100, Math.round(h.progress_seconds / h.total_seconds * 100))) : 0;
+  let sub = "最近更新";
+  if (h.kind === "continue") {
+    sub = h.episode_num ? "第" + h.episode_num + "集" : "电影";
+    if (h.episode_title) sub += " · " + h.episode_title;
+    sub += " · 已看 " + pct + "%";
+  }
+  const action = h.kind === "continue" ? "继续观看" : "查看详情";
+  return '<div class="hero-card" tabindex="0" onclick="heroClick(' + h.video_id + ')">' +
+    '<div class="hero-bg" style="background-image:url(\'' + escAttr(h.cover) + '\')"></div>' +
+    '<div class="hero-mask"></div>' +
+    '<div class="hero-info">' +
+    '<div class="hero-badge">' + (h.kind === "continue" ? "继续观看" : "最近更新") + '</div>' +
+    '<div class="hero-title">' + esc(h.title) + '</div>' +
+    '<div class="hero-sub">' + esc(sub) + '</div>' +
+    (h.kind === "continue" && h.total_seconds > 0
+      ? '<div class="hero-progress"><div class="hero-progress-fill" style="width:' + pct + '%"></div></div>'
+      : "") +
+    '<button class="hero-btn">' + action + '</button>' +
+    '</div></div>';
+}
+
+function heroClick(videoId) {
+  const h = _heroData || {};
+  if (h.kind === "continue" && h.video_id === videoId) {
+    openPlayerAndPlay(videoId, h.episode_num || undefined, h.progress_seconds || 0);
+  } else {
+    navigateTo("detail", videoId);
+  }
+}
+
+function sectionHtml(sec) {
+  let html = '<div class="section">' +
+    '<div class="section-header">' +
+    '<div class="section-title">' + esc(sec.name) + '</div>' +
+    '<button class="section-more" onclick="navigateTo(\'browse\',\'' + sec.type + '\')">查看全部 ›</button>' +
+    '</div><div class="card-grid">';
+  for (const v of sec.videos) html += card(v);
+  html += '</div></div>';
+  return html;
+}
+
+function toggleDesc() {
+  const d = document.getElementById("detail-desc");
+  const b = document.getElementById("desc-toggle");
+  if (!d || !b) return;
+  const expanded = d.classList.toggle("expanded");
+  b.textContent = expanded ? "收起" : "展开";
+}
+
+function focusWithScroll(el) {
+  if (!el) return;
+  el.focus();
+  try { el.scrollIntoView({ block: "nearest", inline: "nearest" }); } catch (e) {}
 }
 
 async function loadBrowse(type) {
   _browsePage = 1;
   _currentType = type;
-  document.getElementById("view-browse").innerHTML = '<div id="browse-content"><div class="loading"><div class="spinner"></div>Loading...</div></div>';
+  document.getElementById("view-browse").innerHTML = '<div id="browse-content"><div class="loading"><div class="spinner"></div>加载中…</div></div>';
   await loadBrowsePage();
 }
 
@@ -108,7 +169,7 @@ async function loadBrowsePage(direction) {
     const data = await F("/api/browse?type=" + _currentType + "&page=" + _browsePage);
     if (!data.results || !data.results.length) {
       if (direction === "next") _browsePage--;
-      el.innerHTML = '<div class="empty-view">No data</div>';
+      el.innerHTML = '<div class="empty-view">暂无内容</div>';
       return;
     }
     let html = '<div class="card-grid">';
@@ -122,44 +183,47 @@ async function loadBrowsePage(direction) {
     el.innerHTML = html;
     autoFocusView();
   } catch (e) {
-    el.innerHTML = '<div class="error-view">Load failed</div>';
+    el.innerHTML = '<div class="error-view">加载失败</div>';
   }
 }
 
 async function loadDetail(videoId) {
   const el = document.getElementById("view-detail");
-  el.innerHTML = '<div class="loading"><div class="spinner"></div>Loading...</div>';
+  el.innerHTML = '<div class="loading"><div class="spinner"></div>加载中…</div>';
   try {
     const v = await F("/api/video/" + videoId);
-    if (!v || !v.id) { el.innerHTML = '<div class="empty-view">Not found</div>'; return; }
+    if (!v || !v.id) { el.innerHTML = '<div class="empty-view">未找到该影片</div>'; return; }
 
     let meta = [];
-    const tn = { movie: "Movie", tv: "TV", variety: "Variety", anime: "Anime" };
+    const tn = { movie: "电影", tv: "剧集", variety: "综艺", anime: "动漫" };
     if (v.type) meta.push(tn[v.type] || v.type);
     if (v.year) meta.push(v.year);
-    if (v.rating) meta.push("⭐ " + v.rating);
+    if (v.rating && v.rating > 0) meta.push("⭐ " + Number(v.rating).toFixed(1));
 
     let epHtml = "";
     if (v.episodes && v.episodes.length && v.type !== "movie") {
-      epHtml = '<div style="font-size:22px;font-weight:bold;margin:16px 0 12px">Episodes</div><div class="episode-grid">';
+      epHtml = '<div class="episodes-title">剧集</div><div class="episode-grid">';
       for (const ep of v.episodes) {
-        epHtml += '<button class="episode-btn" onclick="openPlayerAndPlay(' + v.id + ',' + ep.episode_num + ')">' + (ep.episode_title || "Ep." + ep.episode_num) + '</button>';
+        epHtml += '<button class="episode-btn" onclick="openPlayerAndPlay(' + v.id + ',' + ep.episode_num + ')">' + (ep.episode_title || "第" + ep.episode_num + "集") + '</button>';
       }
       epHtml += '</div>';
     }
 
     el.innerHTML =
       '<div class="detail-layout">' +
-      '<div class="detail-poster"><img src="' + (v.cover || imageFallback(360, 480)) + '" onerror="this.src=\'' + imageFallback(360, 480) + '\'"></div>' +
+      '<div class="detail-poster">' +
+      '<div class="detail-poster-ph">' + esc(v.title) + '</div>' +
+      '<img src="' + escAttr(v.cover || "") + '" onerror="this.style.display=\'none\'">' +
+      '</div>' +
       '<div class="detail-info">' +
       '<div class="detail-title">' + esc(v.title) + '</div>' +
       (meta.length ? '<div class="detail-meta">' + meta.join(" | ") + '</div>' : "") +
-      (v.description ? '<div class="detail-desc">' + esc(v.description) + '</div>' : "") +
-      '<button class="play-btn" onclick="openPlayerAndPlay(' + v.id + ')">▶ Play</button>' +
+      (v.description ? '<div class="detail-desc" id="detail-desc">' + esc(v.description) + '</div><button class="desc-toggle" id="desc-toggle" onclick="toggleDesc()">展开</button>' : "") +
+      '<button class="play-btn" onclick="openPlayerAndPlay(' + v.id + ')">▶ 播放</button>' +
       epHtml + '</div></div>';
     autoFocusView();
   } catch (e) {
-    el.innerHTML = '<div class="error-view">Load failed</div>';
+    el.innerHTML = '<div class="error-view">加载失败</div>';
   }
 }
 
@@ -355,7 +419,7 @@ async function retryPlay() {
   await loadAndPlayUrl(_playId, _playEp);
 }
 
-async function openPlayerAndPlay(videoId, episode) {
+async function openPlayerAndPlay(videoId, episode, startSeconds) {
   // Switch to player view
   document.querySelectorAll(".view").forEach(v => { v.classList.remove("active"); v.classList.add("hidden"); });
   const el = document.getElementById("view-player");
@@ -364,12 +428,13 @@ async function openPlayerAndPlay(videoId, episode) {
   _currentView = "player";
   _playId = videoId;
   _playEp = episode || 1;
+  _startSeconds = startSeconds || 0;
   _playFailed = false;
   _hlsRetryCount = 0;
   clearLoadTimer();
 
   // Show loading
-  el.innerHTML = '<div class="loading"><div class="spinner"></div>Loading...</div>';
+  el.innerHTML = '<div class="loading"><div class="spinner"></div>加载中…</div>';
 
   // Fetch episodes list
   try {
@@ -386,7 +451,7 @@ async function openPlayerAndPlay(videoId, episode) {
   el.innerHTML =
     '<div class="player-bar" id="player-bar">' +
     '  <button class="player-nav-btn" id="btn-prev" onclick="switchEpisode(\'prev\')">◀ 上一集</button>' +
-    '  <span class="player-nav-title" id="player-title">Loading...</span>' +
+    '  <span class="player-nav-title" id="player-title">加载中…</span>' +
     '  <button class="player-nav-btn" id="btn-next" onclick="switchEpisode(\'next\')">下一集 ▶</button>' +
     '  <button class="player-nav-btn" id="btn-fs" onclick="toggleFullscreen()">⛶</button>' +
     '  <button class="player-nav-btn" id="btn-diag" onclick="toggleDiagPanel()">ℹ</button>' +
@@ -431,9 +496,10 @@ async function switchEpisode(dir) {
   }
   _playEp = nextEp;
   updatePlayerButtons();
-  document.getElementById("player-title").textContent = "Loading...";
+  document.getElementById("player-title").textContent = "加载中…";
   _playFailed = false;
   _hlsRetryCount = 0;
+  _startSeconds = 0;
   await loadAndPlayUrl(_playId, _playEp);
   updatePlayerButtons();
 
@@ -451,8 +517,10 @@ async function switchEpisode(dir) {
 
 // Load URL and swap video src (preserves fullscreen)
 async function loadAndPlayUrl(videoId, episode) {
-  let url = "/api/video/" + videoId + "/play";
-  if (episode) url += "?episode=" + episode;
+  const params = [];
+  if (episode) params.push("episode=" + episode);
+  if (_startSeconds > 0) params.push("start_seconds=" + Math.floor(_startSeconds));
+  const url = "/api/video/" + videoId + "/play" + (params.length ? "?" + params.join("&") : "");
   clearLoadTimer();
   hideBufferOSD();
 
@@ -466,7 +534,7 @@ async function loadAndPlayUrl(videoId, episode) {
     }
     _playFailed = false;
 
-    document.getElementById("player-title").textContent = data.episode_title || ("Ep." + episode);
+    document.getElementById("player-title").textContent = data.episode_title || (episode ? "第" + episode + "集" : "");
     _currentUrl = data.play_url || "";
     _currentSourceName = data.source || "";
     _speedSamples = [];
@@ -525,6 +593,14 @@ async function loadAndPlayUrl(videoId, episode) {
     } else {
       video.src = data.play_url;
       video.play().catch(() => {});
+    }
+    // 续播：加载完成后 seek 到上次进度
+    if (_startSeconds > 0) {
+      const doSeek = () => {
+        try { video.currentTime = Math.min(_startSeconds, video.duration || _startSeconds); } catch (e) {}
+      };
+      if (video.readyState >= 1) doSeek();
+      else video.addEventListener("loadedmetadata", doSeek, { once: true });
     }
     startLoadTimer(video);
   } catch (e) {
@@ -633,7 +709,7 @@ function hideSearch() { document.getElementById("search-overlay").classList.add(
 function onSearchInput(val) {
   clearTimeout(_searchTimer);
   document.getElementById("search-hint").classList.add("hidden");
-  document.getElementById("search-results").innerHTML = '<div class="loading"><div class="spinner"></div>Searching...</div>';
+  document.getElementById("search-results").innerHTML = '<div class="loading"><div class="spinner"></div>搜索中…</div>';
   _searchPage = 1;
   _searchTimer = setTimeout(() => doSearch(val, 1), 500);
 }
@@ -641,7 +717,7 @@ async function doSearch(q, page) {
   try {
     const data = await F("/api/search?q=" + encodeURIComponent(q) + "&page=" + page);
     const el = document.getElementById("search-results");
-    if (!data.results || !data.results.length) { el.innerHTML = '<div class="empty-view">No results</div>'; return; }
+    if (!data.results || !data.results.length) { el.innerHTML = '<div class="empty-view">暂无结果</div>'; return; }
     let html = "";
     for (const v of data.results) html += card(v);
     el.innerHTML = html;
@@ -654,10 +730,6 @@ async function doSearch(q, page) {
 }
 
 /* -- Utilities -- */
-function imageFallback(w, h) {
-  w = w || 240; h = h || 320;
-  return 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22' + w + '%22 height=%22' + h + '%22%3E%3Crect fill=%22%23222%22/%3E%3C/svg%3E';
-}
 
 async function F(url) {
   const res = await fetch(url);
@@ -666,18 +738,20 @@ async function F(url) {
 }
 
 function card(v) {
-  const badge = { movie: "Movie", tv: "TV", variety: "Variety", anime: "Anime" }[v.type] || "";
-  const fb = imageFallback();
+  const badge = { movie: "电影", tv: "剧集", variety: "综艺", anime: "动漫" }[v.type] || "";
   return '<div class="video-card" tabindex="0" onclick="hideSearch();navigateTo(\'detail\',' + v.id + ')">' +
-    '<img class="card-img" src="' + (v.cover || fb) + '" loading="lazy" onerror="this.src=\'' + fb + '\'">' +
+    '<div class="card-img-wrap">' +
+    '<div class="card-placeholder">' + esc(v.title) + '</div>' +
+    '<img class="card-img" src="' + escAttr(v.cover || "") + '" loading="lazy" onerror="this.style.display=\'none\'">' +
+    '</div>' +
     '<div class="card-info"><div class="card-title">' + esc(v.title) + '</div>' +
-    '<div class="card-sub">' + (badge ? '<span class="card-badge">' + badge + "</span>" : "") + (v.year ? "<span>" + v.year + "</span>" : "") + (v.rating ? '<span>⭐' + v.rating + "</span>" : "") + "</div></div></div>";
+    '<div class="card-sub">' + (badge ? '<span class="card-badge">' + badge + "</span>" : "") + (v.year ? "<span>" + v.year + "</span>" : "") + (v.rating && v.rating > 0 ? '<span>⭐' + Number(v.rating).toFixed(1) + "</span>" : "") + "</div></div></div>";
 }
 
 /* -- History -- */
 async function loadHistory() {
   const el = document.getElementById("view-history");
-  el.innerHTML = '<div class="loading"><div class="spinner"></div>Loading...</div>';
+  el.innerHTML = '<div class="loading"><div class="spinner"></div>加载中…</div>';
   try {
     const data = await F("/api/history?limit=100");
     if (!data || !data.length) { el.innerHTML = '<div class="empty-view">暂无观看记录</div>'; return; }
@@ -685,12 +759,14 @@ async function loadHistory() {
     for (const h of data) {
       const label = h.episode_id ? "第" + h.episode_id + "集" : "电影";
       const onClick = "hideSearch();navigateTo('detail'," + h.video_id + ")";
-      const fb = imageFallback();
       html += '<div class="video-card" tabindex="0" onclick="' + onClick + '">' +
-        '<img class="card-img" src="' + (h.cover || fb) + '" loading="lazy" onerror="this.src=\'' + fb + '\'">' +
+        '<div class="card-img-wrap">' +
+        '<div class="card-placeholder">' + esc(h.title || '') + '</div>' +
+        '<img class="card-img" src="' + escAttr(h.cover || "") + '" loading="lazy" onerror="this.style.display=\'none\'">' +
+        '</div>' +
         '<div class="card-info"><div class="card-title">' + esc(h.title || '') + '</div>' +
         '<div class="card-sub"><span class="card-badge">' + label + '</span>' +
-        (h.progress_seconds ? '<span>' + Math.round(h.progress_seconds / 60) + 'min</span>' : '') +
+        (h.progress_seconds ? '<span>' + Math.round(h.progress_seconds / 60) + '分钟</span>' : '') +
         '</div></div></div>';
     }
     html += '</div>';
@@ -725,7 +801,7 @@ document.addEventListener("keydown", function(e) {
       if (first) {
         _searchFocused = false;
         _searchResultsActive = true;
-        first.focus();
+        focusWithScroll(first);
       }
       return;
     }
@@ -821,12 +897,12 @@ document.addEventListener("keydown", function(e) {
     
     if (e.key === "ArrowDown" || e.key === "ArrowRight") {
       e.preventDefault();
-      if (curIdx < cards.length - 1) cards[curIdx + 1].focus();
+      if (curIdx < cards.length - 1) focusWithScroll(cards[curIdx + 1]);
       return;
     }
     if (e.key === "ArrowUp" || e.key === "ArrowLeft") {
       e.preventDefault();
-      if (curIdx > 0) { cards[curIdx - 1].focus(); return; }
+      if (curIdx > 0) { focusWithScroll(cards[curIdx - 1]); return; }
       // 到顶部了 → 回到搜索框
       _searchResultsActive = false;
       _searchFocused = true;
@@ -903,15 +979,15 @@ function cycleNav(dir) {
 function focusFirstInView() {
   const view = document.querySelector(".view.active");
   if (!view) return;
-  const first = view.querySelector(".video-card, .play-btn, .episode-btn, .section-more, .browse-tab, .browse-prev, .browse-next");
-  if (first) first.focus();
+  const first = view.querySelector(".hero-card, .video-card, .play-btn, .episode-btn, .section-more, .browse-tab, .browse-prev, .browse-next");
+  if (first) focusWithScroll(first);
 }
 
 function moveFocus(dir) {
   const view = document.querySelector(".view.active");
   if (!view) return;
   const items = Array.from(view.querySelectorAll(
-    ".video-card, .play-btn, .episode-btn, .section-more, .browse-tab, .browse-prev, .browse-next"
+    ".hero-card, .video-card, .play-btn, .episode-btn, .section-more, .browse-tab, .browse-prev, .browse-next"
   ));
   if (dir === "up") {
     const navItems = Array.from(document.querySelectorAll("#nav .nav-btn, .search-btn"));
@@ -920,7 +996,7 @@ function moveFocus(dir) {
   if (!items.length) return;
 
   let idx = items.indexOf(document.activeElement);
-  if (idx < 0) { items[0].focus(); return; }
+  if (idx < 0) { focusWithScroll(items[0]); return; }
 
   const r = document.activeElement.getBoundingClientRect();
   let best = -1, bestDist = Infinity;
@@ -942,7 +1018,7 @@ function moveFocus(dir) {
       const active = document.querySelector("#nav .nav-btn.active");
       if (active) { active.focus(); return; }
     }
-    items[best].focus();
+    focusWithScroll(items[best]);
   }
 }
 

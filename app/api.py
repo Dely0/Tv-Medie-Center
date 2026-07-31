@@ -56,7 +56,7 @@ def api_browse(
     page_size: int = Query(default=30, ge=1, le=100),
 ):
     """分类浏览"""
-    valid_types = {"movie", "tv", "variety", "anime"}
+    valid_types = {"movie", "tv", "variety", "anime", "recent"}
     if type not in valid_types:
         raise HTTPException(400, f"无效类型: {type}，可用: {', '.join(valid_types)}")
     results, total = get_videos_by_type(type, page, page_size)
@@ -206,6 +206,7 @@ def _is_media_url(url: str) -> bool:
 def api_play(
     video_id: int,
     episode: int = Query(default=None, description="剧集编号"),
+    start_seconds: float = Query(default=0, ge=0, description="续播起始秒数"),
 ):
     """解析指定视频/剧集的真实播放地址（实际播放由前端完成）"""
     detail = get_video_detail(video_id)
@@ -248,6 +249,7 @@ def api_play(
         "episode_title": episode_title,
         "play_url": play_url,
         "source": detail.get("source", ""),
+        "start_seconds": start_seconds,
     }
 # ─── 观看历史 ───
 

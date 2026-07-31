@@ -125,7 +125,7 @@
 - `GET /api/home`：返回 `hero` + `sections`。
   - `hero`：`{ kind: 'continue' | 'recent', video_id, title, cover, type, episode_num, episode_title, progress_seconds, total_seconds }`。
   - sections 增加“为你推荐”（有历史时）、“热播榜”（`hits_week > 0` 降序，兜底 `hits`）、“高分榜”（`douban_score > 0` 或 `rating > 0`，用非零值降序）。
-  - 所有行共用去重集合，任何影片一屏内只出现一次；数据不足 8 个就少显示；空榜不渲染。
+- 所有行共用去重集合，任何影片一屏内只出现一次；每栏最多 7 个，数据不足就少显示；空榜不渲染。
 - `GET /api/video/{id}`：返回 `related`（同 genre 或演员交集，排除自身，6~8 部）。
 - `GET /api/browse`：新增可选参数 `genre`；并支持 `type=recent`（按 `updated_at` 降序，忽略分类，供“最近更新”的查看全部使用）。
 - `GET /api/genres?type=movie`：返回该分类下的题材列表及数量。
