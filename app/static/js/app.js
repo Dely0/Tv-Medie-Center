@@ -388,11 +388,12 @@ async function openPlayerAndPlay(videoId, episode) {
     '  <button class="player-nav-btn" id="btn-prev" onclick="switchEpisode(\'prev\')">◀ 上一集</button>' +
     '  <span class="player-nav-title" id="player-title">Loading...</span>' +
     '  <button class="player-nav-btn" id="btn-next" onclick="switchEpisode(\'next\')">下一集 ▶</button>' +
+    '  <button class="player-nav-btn" id="btn-fs" onclick="toggleFullscreen()">⛶</button>' +
     '  <button class="player-nav-btn" id="btn-diag" onclick="toggleDiagPanel()">ℹ</button>' +
     '  <button class="player-close-btn" onclick="stopPlayerFromClose()">✕</button>' +
     '</div>' +
     '<div id="player-stage">' +
-    '<video id="tv-video" controls autoplay playsinline preload="auto"></video>' +
+    '<video id="tv-video" controls controlsList="nofullscreen" autoplay playsinline preload="auto"></video>' +
     '</div>';
 
   const video = document.getElementById("tv-video");
@@ -578,6 +579,20 @@ function tryFullscreen(el) {
   }
 }
 
+function toggleFullscreen() {
+  const stage = document.getElementById("player-stage");
+  if (!stage) return;
+  if (document.fullscreenElement) {
+    document.exitFullscreen().catch(() => {});
+  } else if (document.webkitFullscreenElement) {
+    document.webkitExitFullscreen();
+  } else if (stage.requestFullscreen) {
+    stage.requestFullscreen().catch(() => {});
+  } else if (stage.webkitRequestFullscreen) {
+    stage.webkitRequestFullscreen();
+  }
+}
+
 function stopPlayerInternal(saveProgressNow) {
   if (_playerTimer) { clearInterval(_playerTimer); _playerTimer = null; }
   clearLoadTimer();
@@ -740,6 +755,16 @@ document.addEventListener("keydown", function(e) {
     if (e.key === "ArrowUp") {
       e.preventDefault();
       toggleDiagPanel();
+      return;
+    }
+    // 空格 / 遥控 OK 键: 播放/暂停
+    if (e.key === " " || e.key === "Spacebar" || e.code === "Space") {
+      e.preventDefault();
+      const video = document.getElementById("tv-video");
+      if (video) {
+        if (video.paused) video.play().catch(() => {});
+        else video.pause();
+      }
       return;
     }
     // 回车: 播放失败时重试
