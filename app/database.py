@@ -206,25 +206,48 @@ def search_videos(keyword: str, page: int = 1, page_size: int = 30) -> tuple[lis
     return [dict(r) for r in rows], total
 
 
-def get_videos_by_type(type_: str, page: int = 1, page_size: int = 30) -> tuple[list[dict], int]:
-    """按类型分页查询；type_='recent' 时按更新时间不分类型"""
+def get_videos_by_type(type_: str, page: int = 1, page_size: int = 30,
+                       genre: str = "") -> tuple[list[dict], int]:
+    """按类型分页查询；type_='recent' 时按更新时间不分类型；genre 非空时按题材过滤"""
     offset = (page - 1) * page_size
     with get_db() as db:
         if type_ == "recent":
-            count_row = db.execute("SELECT COUNT(*) FROM videos").fetchone()
+            conds, params = [], []
+            if genre:
+                conds.append("genre LIKE ?")
+                params.append(f"%{genre}%")
+            where = (" WHERE " + " AND ".join(conds)) if conds else ""
+            count_row = db.execute(f"SELECT COUNT(*) FROM videos{where}", params).fetchone()
             total = count_row[0] if count_row else 0
             rows = db.execute(
-                "SELECT * FROM videos ORDER BY updated_at DESC LIMIT ? OFFSET ?",
-                (page_size, offset)
+                f"SELECT * FROM videos{where} ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+                params + [page_size, offset]
             ).fetchall()
         else:
-            count_row = db.execute("SELECT COUNT(*) FROM videos WHERE type=?", (type_,)).fetchone()
+            conds = ["type=?"]
+            params = [type_]
+            if genre:
+                conds.append("genre LIKE ?")
+                params.append(f"%{genre}%")
+            where = " WHERE " + " AND ".join(conds)
+            count_row = db.execute(f"SELECT COUNT(*) FROM videos{where}", params).fetchone()
             total = count_row[0] if count_row else 0
             rows = db.execute(
-                "SELECT * FROM videos WHERE type=? ORDER BY updated_at DESC LIMIT ? OFFSET ?",
-                (type_, page_size, offset)
+                f"SELECT * FROM videos{where} ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+                params + [page_size, offset]
             ).fetchall()
     return [dict(r) for r in rows], total
+
+
+def get_genres(type_: str) -> list[dict]:
+    """某分类下的题材列表（含数量，按数量降序）"""
+    with get_db() as db:
+        rows = db.execute(
+            "SELECT genre, COUNT(*) AS cnt FROM videos "
+            "WHERE type=? AND genre != '' GROUP BY genre ORDER BY cnt DESC, genre ASC",
+            (type_,)
+        ).fetchall()
+    return [{"genre": r["genre"], "count": r["cnt"]} for r in rows]
 
 
 def get_video_detail(video_id: int) -> dict | None:

@@ -661,6 +661,7 @@ html, body {
 /* ─── 浏览页分类标签 ─── */
 .browse-tabs {
   display: flex; gap: 8px;
+  flex-wrap: wrap;
   margin-bottom: 24px;
 }
 .browse-tab {
@@ -678,6 +679,12 @@ html, body {
   outline: none;
   border-color: var(--border-focus);
 }
+.browse-tab-count {
+  margin-left: 6px;
+  font-size: 14px;
+  color: var(--text-dim);
+}
+.browse-tab.active .browse-tab-count { color: var(--accent); }
 
 .continue-watch {
   margin-bottom: 20px;

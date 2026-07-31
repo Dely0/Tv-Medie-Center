@@ -9,7 +9,7 @@ from fastapi.staticfiles import StaticFiles
 from app.database import (
     search_videos, get_videos_by_type, get_video_detail,
     get_home_data, get_watch_history, save_watch_history,
-    upsert_video, get_related,
+    upsert_video, get_related, get_genres,
 )
 from app.crawler import get_status as get_crawl_status, run_crawl
 from app.sources import get_all_sources
@@ -54,13 +54,22 @@ def api_browse(
     type: str = Query(default="movie", description="类型"),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=30, ge=1, le=100),
+    genre: str = Query(default="", description="题材筛选"),
 ):
     """分类浏览"""
     valid_types = {"movie", "tv", "variety", "anime", "recent"}
     if type not in valid_types:
         raise HTTPException(400, f"无效类型: {type}，可用: {', '.join(valid_types)}")
-    results, total = get_videos_by_type(type, page, page_size)
+    results, total = get_videos_by_type(type, page, page_size, genre)
     return {"results": results, "total": total, "page": page}
+
+
+@app.get("/api/genres")
+def api_genres(
+    type: str = Query(default="movie", description="类型"),
+):
+    """某分类下的题材列表"""
+    return {"genres": get_genres(type)}
 
 
 # ─── 搜索 ───

@@ -1,6 +1,7 @@
 /* TV Media Center */
 let _currentView = "home";
 let _currentType = "";
+let _currentGenre = "";
 let _searchTimer = null;
 let _searchFocused = false;
 let _searchResultsActive = false; // 搜索结果浏览模式
@@ -188,6 +189,7 @@ function focusWithScroll(el) {
 async function loadBrowse(type) {
   _browsePage = 1;
   _currentType = type;
+  _currentGenre = "";
   document.getElementById("view-browse").innerHTML = '<div id="browse-content"><div class="loading"><div class="spinner"></div>加载中…</div></div>';
   await loadBrowsePage();
 }
@@ -197,13 +199,26 @@ async function loadBrowsePage(direction) {
   else if (direction === "prev" && _browsePage > 1) _browsePage--;
   const el = document.getElementById("browse-content");
   try {
-    const data = await F("/api/browse?type=" + _currentType + "&page=" + _browsePage);
+    const data = await F("/api/browse?type=" + _currentType + "&page=" + _browsePage + "&genre=" + encodeURIComponent(_currentGenre));
+    let genres = [];
+    try {
+      const gd = await F("/api/genres?type=" + _currentType);
+      genres = gd.genres || [];
+    } catch (e) {}
+
+    let html = '<div class="browse-tabs">' +
+      '<button class="browse-tab' + (_currentGenre === "" ? " active" : "") + '" data-genre="">全部</button>';
+    for (const g of genres) {
+      html += '<button class="browse-tab' + (g.genre === _currentGenre ? " active" : "") + '" data-genre="' + escAttr(g.genre) + '">' + esc(g.genre) + '<span class="browse-tab-count">' + g.count + '</span></button>';
+    }
+    html += '</div>';
+
     if (!data.results || !data.results.length) {
       if (direction === "next") _browsePage--;
-      el.innerHTML = '<div class="empty-view">暂无内容</div>';
+      el.innerHTML = html + '<div class="empty-view">暂无内容</div>';
       return;
     }
-    let html = '<div class="card-grid">';
+    html += '<div class="card-grid">';
     for (const v of data.results) html += card(v);
     html += '</div>';
     html += '<div style="display:flex;justify-content:center;gap:16px;margin-top:24px">' +
@@ -212,10 +227,25 @@ async function loadBrowsePage(direction) {
       (data.results.length >= 30 ? '<button class="nav-btn browse-next" onclick="loadBrowsePage(\'next\')">下一页 ▶</button>' : '') +
       '</div>';
     el.innerHTML = html;
+    document.querySelectorAll("#browse-content .browse-tab").forEach(tab => {
+      tab.onclick = () => selectGenre(tab.getAttribute("data-genre") || "");
+    });
     autoFocusView();
   } catch (e) {
     el.innerHTML = '<div class="error-view">加载失败</div>';
   }
+}
+
+function selectGenre(genre) {
+  _currentGenre = genre || "";
+  _browsePage = 1;
+  loadBrowsePage();
+  // 重渲染后把焦点留在所选 Tab 上
+  setTimeout(() => {
+    document.querySelectorAll("#browse-content .browse-tab").forEach(tab => {
+      if ((tab.getAttribute("data-genre") || "") === _currentGenre) tab.focus();
+    });
+  }, 80);
 }
 
 async function loadDetail(videoId) {
