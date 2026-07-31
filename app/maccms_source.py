@@ -197,6 +197,21 @@ class MaccmsSource:
 
         return self._normalize_list(items[:pagesize])
 
+    def list_page(self, category: str = "movie", page: int = 1, pagesize: int = 100) -> list[dict]:
+        """按分类分页获取列表（供轻量回填使用；分类过滤失效时回退全量）"""
+        cat_id = self.category_map.get(category)
+        params = {"ac": "videolist", "pg": str(page), "pagesize": str(min(pagesize, 100))}
+        if cat_id:
+            params["t"] = cat_id
+        data = self._request(params)
+        items = (data or {}).get("list") or []
+        if len(items) < 5 and cat_id:
+            # 部分源 t 过滤返回异常少，回退全量列表（类型由 _infer_type 推断）
+            params.pop("t", None)
+            data = self._request(params)
+            items = (data or {}).get("list") or []
+        return self._normalize_list(items)
+
     def get_detail(self, vod_id_or_url: str) -> tuple[dict, list[dict]]:
         """获取视频详情和剧集列表"""
         # 支持传入 URL 或 ID
@@ -278,8 +293,36 @@ class MaccmsSource:
                 "rating": self._safe_float(item.get("vod_score") or item.get("vod_rating")),
                 "source": self.name,
                 "source_url": self._make_detail_url(item.get("vod_id")),
+                "genre": self._clean_genre(item),
+                "hits": self._safe_int(item.get("vod_hits")),
+                "hits_week": self._safe_int(item.get("vod_hits_week")),
+                "douban_score": self._safe_float(item.get("vod_douban_score")),
+                "remarks": item.get("vod_remarks", ""),
             })
         return results
+
+    GENRE_MAP = {
+        "动作": "动作", "喜剧": "喜剧", "科幻": "科幻", "爱情": "爱情",
+        "悬疑": "悬疑", "犯罪": "犯罪", "剧情": "剧情", "战争": "战争",
+        "恐怖": "恐怖", "奇幻": "奇幻", "冒险": "冒险", "动画": "动画",
+        "真人秀": "真人秀", "脱口秀": "脱口秀", "选秀": "选秀", "纪录片": "纪录片",
+    }
+
+    def _clean_genre(self, item: dict) -> str:
+        """从 type_name / vod_class 清洗出统一题材"""
+        raw = (item.get("vod_class") or "").strip() or (item.get("type_name") or "").strip()
+        if not raw:
+            return ""
+        raw = re.sub(r"^(大陆|国产|中国|内地|欧美|日本|韩国|港台|香港|台湾|美国|英国|法国|泰国|印度)\s*", "", raw)
+        if raw in self.GENRE_MAP:
+            return self.GENRE_MAP[raw]
+        for suf in ("电视剧", "连续剧", "剧场版", "电影", "动漫", "动画", "综艺节目", "剧集", "片", "剧"):
+            if raw.endswith(suf):
+                cand = raw[: -len(suf)]
+                if cand in self.GENRE_MAP:
+                    return self.GENRE_MAP[cand]
+                break
+        return raw
 
     def _normalize_detail(self, item: dict) -> tuple[dict, list[dict]]:
         """标准化详情数据"""
@@ -295,6 +338,11 @@ class MaccmsSource:
             "rating": self._safe_float(item.get("vod_score") or item.get("vod_rating")),
             "source": self.name,
             "source_url": self._make_detail_url(item.get("vod_id")),
+            "genre": self._clean_genre(item),
+            "hits": self._safe_int(item.get("vod_hits")),
+            "hits_week": self._safe_int(item.get("vod_hits_week")),
+            "douban_score": self._safe_float(item.get("vod_douban_score")),
+            "remarks": item.get("vod_remarks", ""),
         }
 
         # 解析剧集
@@ -559,6 +607,9 @@ class _MaccmsWrapper:
 
     def get_list(self, category: str = "movie", pagesize: int = 100) -> list[dict]:
         return self._src.get_list(category, pagesize)
+
+    def get_list_page(self, category: str = "movie", page: int = 1, pagesize: int = 100) -> list[dict]:
+        return self._src.list_page(category, page, pagesize)
 
     def get_detail(self, url: str) -> tuple[dict, list[dict]]:
         return self._src.get_detail(url)

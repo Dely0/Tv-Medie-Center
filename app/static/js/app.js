@@ -139,10 +139,11 @@ function heroClick(videoId) {
 
 function sectionHtml(sec, cols) {
   const items = (sec.videos || []).slice(0, cols || 20);
+  const hideMore = sec.type === "recommend" || sec.type === "hot" || sec.type === "score";
   let html = '<div class="section">' +
     '<div class="section-header">' +
     '<div class="section-title">' + esc(sec.name) + '</div>' +
-    (sec.type === "recommend" ? "" : '<button class="section-more" onclick="navigateTo(\'browse\',\'' + sec.type + '\')">查看全部 ›</button>') +
+    (hideMore ? "" : '<button class="section-more" onclick="navigateTo(\'browse\',\'' + sec.type + '\')">查看全部 ›</button>') +
     '</div><div class="card-grid">';
   for (const v of items) html += card(v);
   html += '</div></div>';
@@ -778,13 +779,14 @@ async function F(url) {
 
 function card(v) {
   const badge = { movie: "电影", tv: "剧集", variety: "综艺", anime: "动漫" }[v.type] || "";
+  const score = (v.douban_score && v.douban_score > 0) ? v.douban_score : v.rating;
   return '<div class="video-card" tabindex="0" onclick="hideSearch();navigateTo(\'detail\',' + v.id + ')">' +
     '<div class="card-img-wrap">' +
     '<div class="card-placeholder">' + esc(v.title) + '</div>' +
     '<img class="card-img" src="' + escAttr(v.cover || "") + '" loading="lazy" onerror="this.style.display=\'none\'">' +
     '</div>' +
     '<div class="card-info"><div class="card-title">' + esc(v.title) + '</div>' +
-    '<div class="card-sub">' + (badge ? '<span class="card-badge">' + badge + "</span>" : "") + (v.year ? "<span>" + v.year + "</span>" : "") + (v.rating && v.rating > 0 ? '<span>⭐' + Number(v.rating).toFixed(1) + "</span>" : "") + "</div></div></div>";
+    '<div class="card-sub">' + (badge ? '<span class="card-badge">' + badge + "</span>" : "") + (v.year ? "<span>" + v.year + "</span>" : "") + (score && score > 0 ? '<span>⭐' + Number(score).toFixed(1) + "</span>" : "") + "</div></div></div>";
 }
 
 /* -- History -- */

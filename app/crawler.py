@@ -143,3 +143,33 @@ def start_crawler_scheduler():
     t = threading.Thread(target=scheduler, daemon=True)
     t.start()
     logger.info(f"爬虫调度器已启动，间隔 {CRAWL_INTERVAL // 3600} 小时")
+
+
+def backfill_rank_fields(max_pages: int = 5):
+    """轻量回填排行/题材字段：直接读取源站列表页（自带 hits/评分/题材），不拉详情"""
+    sources = get_maccms_crawlable_sources()
+    total = 0
+    seen_urls = set()
+    for src in sources:
+        for cat in ("movie", "tv", "variety", "anime"):
+            for pg in range(1, max_pages + 1):
+                try:
+                    items = src.get_list_page(cat, pg)
+                except Exception as e:
+                    logger.warning(f"[{src.name}] 列表页 {cat} 第 {pg} 页失败: {e}")
+                    continue
+                if not items:
+                    break
+                for item in items:
+                    su = item.get("source_url", "")
+                    if not su or su in seen_urls:
+                        continue
+                    seen_urls.add(su)
+                    try:
+                        upsert_video(item)
+                        total += 1
+                    except Exception:
+                        continue
+    rebuild_fts()
+    logger.info(f"排行字段回填完成，共更新 {total} 条")
+    return total

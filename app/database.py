@@ -86,11 +86,30 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_episodes_video ON episodes(video_id);
             CREATE INDEX IF NOT EXISTS idx_history_watched ON watch_history(watched_at DESC);
         """)
+        _ensure_columns(db)
         _init_fts(db)
 
 
 # trigram 分词器支持中文子串匹配（SQLite >= 3.34），否则回退 unicode61 + LIKE
 FTS_TOKENIZER = "trigram" if sqlite3.sqlite_version_info >= (3, 34, 0) else "unicode61"
+
+
+def _ensure_columns(db: sqlite3.Connection):
+    """幂等补充 videos 表新增列（排行/题材/备注）"""
+    existing = {row["name"] for row in db.execute("PRAGMA table_info(videos)").fetchall()}
+    columns = {
+        "genre": "TEXT",
+        "hits": "INTEGER DEFAULT 0",
+        "hits_week": "INTEGER DEFAULT 0",
+        "douban_score": "REAL",
+        "remarks": "TEXT",
+    }
+    for col, ddl in columns.items():
+        if col not in existing:
+            db.execute(f"ALTER TABLE videos ADD COLUMN {col} {ddl}")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_videos_genre ON videos(genre)")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_videos_hits_week ON videos(hits_week)")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_videos_douban_score ON videos(douban_score)")
 
 
 def _init_fts(db: sqlite3.Connection):
@@ -228,49 +247,53 @@ def get_home_data() -> dict:
     with get_db() as db:
         hero = _get_home_hero(db)
         seen = set()
-        sections = []
 
-        # 为你推荐（有观看历史时才出现）
-        rec = get_recommendations(20)
-        if rec:
-            rec_videos = []
-            for r in rec:
-                if r["id"] in seen:
-                    continue
-                seen.add(r["id"])
-                rec_videos.append(dict(r))
-            if rec_videos:
-                sections.append({"name": "为你推荐", "type": "recommend", "videos": rec_videos})
-
-        # 最近更新（返回 20 个，前端按当前分辨率取列数）
-        recent = db.execute(
-            "SELECT * FROM videos ORDER BY updated_at DESC LIMIT 20"
-        ).fetchall()
-        recent_videos = []
-        for r in recent:
-            if r["id"] in seen:
-                continue
-            seen.add(r["id"])
-            recent_videos.append(dict(r))
-        sections.append({"name": "最近更新", "type": "recent", "videos": recent_videos})
-
-        # 分类栏目：跳过已在前面出现过的影片，每栏最多 20 个
-        label_map = {"movie": "电影", "tv": "电视剧", "variety": "综艺", "anime": "动漫"}
-        for type_ in ["movie", "tv", "variety", "anime"]:
-            rows = db.execute(
-                "SELECT * FROM videos WHERE type=? ORDER BY updated_at DESC LIMIT 60",
-                (type_,)
-            ).fetchall()
+        # 先按“保留优先级”占用去重集合（榜单优先，避免被其他栏目挤掉），再按展示顺序输出
+        def take(rows, limit=20):
             items = []
             for r in rows:
-                if len(items) >= 20:
+                if len(items) >= limit:
                     break
                 if r["id"] in seen:
                     continue
                 seen.add(r["id"])
                 items.append(dict(r))
-            if items:
-                sections.append({"name": label_map[type_], "type": type_, "videos": items})
+            return items
+
+        reserved = {}
+        reserved["score"] = take(db.execute(
+            """SELECT * FROM videos
+               WHERE douban_score > 0 OR rating > 0
+               ORDER BY COALESCE(NULLIF(douban_score, 0), NULLIF(rating, 0)) DESC, updated_at DESC
+               LIMIT 40"""
+        ).fetchall())
+        reserved["hot"] = take(db.execute(
+            "SELECT * FROM videos WHERE hits_week > 0 OR hits > 0 "
+            "ORDER BY hits_week DESC, hits DESC, updated_at DESC LIMIT 40"
+        ).fetchall())
+        reserved["recommend"] = take(get_recommendations(40))
+        reserved["recent"] = take(db.execute(
+            "SELECT * FROM videos ORDER BY updated_at DESC LIMIT 40"
+        ).fetchall())
+        reserved["cats"] = {}
+        label_map = {"movie": "电影", "tv": "电视剧", "variety": "综艺", "anime": "动漫"}
+        for type_ in ["movie", "tv", "variety", "anime"]:
+            reserved["cats"][type_] = take(db.execute(
+                "SELECT * FROM videos WHERE type=? ORDER BY updated_at DESC LIMIT 60",
+                (type_,)
+            ).fetchall())
+
+        sections = []
+        if reserved["recommend"]:
+            sections.append({"name": "为你推荐", "type": "recommend", "videos": reserved["recommend"]})
+        if reserved["hot"]:
+            sections.append({"name": "热播榜", "type": "hot", "videos": reserved["hot"]})
+        if reserved["score"]:
+            sections.append({"name": "高分榜", "type": "score", "videos": reserved["score"]})
+        sections.append({"name": "最近更新", "type": "recent", "videos": reserved["recent"]})
+        for type_ in ["movie", "tv", "variety", "anime"]:
+            if reserved["cats"][type_]:
+                sections.append({"name": label_map[type_], "type": type_, "videos": reserved["cats"][type_]})
 
     return {"hero": hero, "sections": sections}
 
@@ -463,7 +486,8 @@ def upsert_video(video: dict) -> int:
         if existing:
             # 更新已有记录
             fields = ["title", "type", "cover", "description", "year",
-                      "area", "director", "actors", "rating", "source"]
+                      "area", "director", "actors", "rating", "source",
+                      "genre", "hits", "hits_week", "douban_score", "remarks"]
             sets = ", ".join(f"{f}=?" for f in fields)
             sets += ", updated_at=CURRENT_TIMESTAMP"
             values = [video.get(f) for f in fields]
@@ -476,13 +500,17 @@ def upsert_video(video: dict) -> int:
         else:
             cur = db.execute(
                 """INSERT INTO videos(title, type, cover, description, year,
-                   area, director, actors, rating, source, source_url)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   area, director, actors, rating, source, genre, hits, hits_week,
+                   douban_score, remarks, source_url)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (video["title"], video.get("type", "movie"),
                  video.get("cover"), video.get("description"),
                  video.get("year"), video.get("area"),
                  video.get("director"), video.get("actors"),
                  video.get("rating"), video.get("source", ""),
+                 video.get("genre", ""), video.get("hits", 0),
+                 video.get("hits_week", 0), video.get("douban_score"),
+                 video.get("remarks", ""),
                  video["source_url"])
             )
             return cur.lastrowid
