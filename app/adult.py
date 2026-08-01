@@ -57,6 +57,7 @@ ADULT_KEYWORDS = [
     "肮脏", "福利姬", "援交", "包养", "陪睡", "黑料", "啪啪", "浪叫",
     "操我", "操死", "狂操", "狂干", "干我", "猛干", "高潮", "偷拍", "大胸",
     "嫩穴", "爆射", "底裤", "迷奸", "约炮", "嫩模", "泄密流出", "勃起",
+    "罩杯", "女大学生", "女大生", "私密档案",
     "处女膜", "肉蒲团", "玉女心经", "极乐宝鉴", "灯草和尚", "赤裸羔羊",
     "玉蒲团", "剑奴", "裸体", "全裸", "裸聊",
     # 成人内容类型/平台/片商
@@ -71,6 +72,10 @@ ADULT_KEYWORDS = [
     "FUCK", "fuck", "SEX", "Sex", "Porn", "porn", "MILF", "milf", "Blowjob",
     "blowjob", "Creampie", "creampie", "Gangbang", "gangbang", "Bondage",
     "bondage", "BDSM", "bdsm", "Anal", "anal",
+    # 成人影片番号前缀（片商代码，如 MDHG-0008 / DASS595 / HEYZO-3090）
+    "MDHG", "HEYZO", "DASS", "HONB", "BLXC", "KANBi", "REBD", "STARS", "SSIS",
+    "SONE", "IPX", "ABP", "MIDE", "MIDV", "MEYD", "JUY", "NTR", "HMN", "FSDSS",
+    "PRED", "WANZ", "JUL", "SAME", "CAWD", "ADN", "GVH", "POKA", "CESD", "SIVR",
     # 实际数据补充
     "梅洛迪", "希娜", "Meru", "Melody",
 ]
@@ -131,7 +136,12 @@ def is_adult_title(title: str) -> bool:
     if not title:
         return False
     t = str(title)
-    return any(k in t for k in ADULT_KEYWORDS)
+    if any(k in t for k in ADULT_KEYWORDS):
+        return True
+    # 成人影片番号：独立词边界的 2-8个字母 + 连字符/下划线/无分隔 + 3-5位数字
+    # （如 MDHG-0008、DASS595；词边界避免截断长单词如 SEVENTEEN2021）
+    import re
+    return bool(re.search(r"\b[A-Za-z]{2,8}[-_]?\d{3,5}\b", t))
 
 
 def adult_cond_sql(column: str = "v") -> tuple[str, list]:
@@ -146,6 +156,8 @@ def adult_cond_sql(column: str = "v") -> tuple[str, list]:
     for kw in ADULT_KEYWORDS:
         parts.append(f"{column}.title LIKE ?")
         params.append(f"%{kw}%")
+    # 番号模式：大写字母(2+) - 数字(3+)（如 MDHG-0008），SQLite GLOB 匹配
+    parts.append(f"{column}.title GLOB '*[A-Z][A-Z]*-[0-9][0-9][0-9]*'")
     if not parts:
         return "", []
     return "(" + " OR ".join(parts) + ")", params
