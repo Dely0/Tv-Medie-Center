@@ -56,3 +56,31 @@ scripts\restart.bat
 - drpyS 起不来：看 `sidecar\logs\drpys.err.log`；确认 Node 版本（需 18-23，v22 已验证）。
 - 源请求失败：`sidecar\logs\drpys.log` 有每个模块的错误日志。
 - 文件名乱码：只用 `setup_drpys.ps1`（Python 解压）；不要用 Windows 自带 tar 解压。
+
+## 采集源自动并入（阶段 C）
+
+drpyS 自带 `json/采集20xx静态.json` 采集站清单（爱奇艺/腾讯/暴风/非凡/无尽/金鹰等 90+ 端点）。
+每日同步（或 `POST /api/ops/sync-now`）会自动：
+
+- 跳过 `[密]` 成人清单与名称含 AV/成人/番号 的源；
+- 按 base_url/名称去重（重名自动加"（采集）"或序号）；
+- 并行测通（`ac=list` 有数据）才并入 `data/maccms_community.json`；
+- 健康检查继续自动隔离失效源。
+
+## 便携打包（miniPC 部署）
+
+```bat
+python scripts\build_portable.py
+```
+
+输出 `portable\TvMediaCenter\`（含嵌入式 Python + fastapi/uvicorn/requests、
+项目代码、Node + drpys 侧车）和 zip 包。目标机器解压后运行 `start-all.bat` 即可，
+全部文件可放在 D 盘，不写 C 盘。
+
+## 关于 TVBox JAR 爬虫（饭太硬 csp_*）的结论
+
+饭太硬 49 个 csp_* 源是 **Android DEX + ARM 原生 .so 加固**（ftyguard），
+只能在安卓设备/电视盒上运行，Windows miniPC 的 JVM 无法加载。因此阶段 C 不采用
+JAR 宿主方案，改用两条更可行的路线：drpyS JS 爬虫生态（阶段 B，已含荐片/玩偶/果果等）
++ MacCMS 采集站大池（本页上一节）。网盘类源（夸克/UC/阿里）需要登录凭据，默认关闭，
+后续如需接入再单独做。

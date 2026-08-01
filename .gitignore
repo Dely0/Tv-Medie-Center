@@ -18,6 +18,7 @@ sidecar/drpys/
 sidecar/logs/
 sidecar/npm-cache/
 sidecar/*.tar.gz
+portable/
 *.txt
 start.bat
 *.zip

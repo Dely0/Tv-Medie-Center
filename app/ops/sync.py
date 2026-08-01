@@ -4,10 +4,106 @@ import logging
 import os
 import threading
 import time
+import urllib.parse
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import config as cfg
 
 logger = logging.getLogger("ops_sync")
+
+
+def merge_drpy_collect_sources(test_working: bool = True) -> dict:
+    """把 drpyS 自带的采集源清单（采集2024/2025/2026静态.json 等）并入社区 MacCMS 源池。
+    - 跳过 [密] 成人清单
+    - 按 base_url 去重、按名称去重（重名自动加序号）
+    - 可选：并行测通（ac=list 有数据）才入库
+    """
+    from app.source_framework.tvbox_config import merge_community_sources
+    from app.maccms_source import get_manager
+
+    _ADULT_NAME_HINTS = ("AV", "成人", "番号", "老色逼", "湿乐园", "奶香香", "色")
+
+    json_dir = os.path.join(cfg.DRPYS_DIR, "json")
+    existing_bases = {s.base_url for s in get_manager().get_all()}
+    existing_names = {s.name for s in get_manager().get_all()}
+    entries = []
+    seen_bases = set(existing_bases)
+    seen_names = set(existing_names)
+    try:
+        files = [f for f in os.listdir(json_dir) if f.endswith("_json")]
+    except Exception:
+        files = []
+    for f in files:
+        if "\u5bc6" in f:
+            continue  # 成人清单不并入
+        try:
+            with open(os.path.join(json_dir, f), encoding="utf-8-sig") as fp:
+                data = json.load(fp)
+        except Exception:
+            continue
+        if not isinstance(data, list):
+            continue
+        for it in data:
+            base = (it.get("url") or "").strip().rstrip("/")
+            name = (it.get("name") or "").strip()
+            if not base or base in seen_bases:
+                continue
+            if any(h in name for h in _ADULT_NAME_HINTS):
+                continue
+            if not name:
+                name = base
+            if name in seen_names:
+                i = 2
+                while f"{name}{i}" in seen_names:
+                    i += 1
+                name = f"{name}{i}"
+            seen_bases.add(base)
+            seen_names.add(name)
+            entries.append({
+                "name": name,
+                "base_url": base,
+                "enabled": True,
+                "category_map": {"movie": "1", "tv": "2", "variety": "3", "anime": "4"},
+                "source_type": "maccms",
+                "from_config": "drpys-collect",
+            })
+
+    if test_working and entries:
+        def _test(e):
+            url = e["base_url"] + "/api.php/provide/vod?" + urllib.parse.urlencode(
+                {"ac": "list", "at": "json", "pagesize": "3"}
+            )
+            try:
+                req = urllib.request.Request(url, headers={
+                    "User-Agent": "Mozilla/5.0", "Referer": e["base_url"],
+                })
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    data = json.loads(resp.read().decode("utf-8", "replace"))
+                return e, bool(data.get("code") == 1 and data.get("list"))
+            except Exception:
+                return e, False
+
+        working = []
+        pool = ThreadPoolExecutor(max_workers=12)
+        futures = [pool.submit(_test, e) for e in entries]
+        try:
+            for f in as_completed(futures, timeout=90):
+                try:
+                    e, ok = f.result(timeout=1)
+                except Exception:
+                    continue
+                if ok:
+                    working.append(e)
+        except Exception:
+            pass
+        finally:
+            pool.shutdown(wait=False)
+        entries = working
+
+    added, total = merge_community_sources(entries)
+    logger.info(f"drpy 采集源合并: 候选 {len(entries)}, 新增 {added}, 社区源总数 {total}")
+    return {"candidates": len(entries), "added": added, "total": total}
 
 
 def _sync_once() -> dict:
@@ -52,6 +148,13 @@ def _sync_once() -> dict:
     except Exception as e:
         logger.warning(f"drpyS 注册表刷新失败: {e}")
         result["drpy_refresh"] = False
+
+    # 采集源清单并入社区 MacCMS 池（并行测通后入库）
+    try:
+        result["collect_merge"] = merge_drpy_collect_sources(test_working=True)
+    except Exception as e:
+        logger.warning(f"采集源合并失败: {e}")
+        result["collect_merge"] = {"error": str(e)}
 
     return result
 

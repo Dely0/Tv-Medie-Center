@@ -160,6 +160,21 @@ def run_crawl():
             _status["progress"] = "没有启用的视频源，请检查配置文件"
         return
 
+    # 源多了以后全量详情爬取太重：按健康状态/延迟排序，每轮最多爬 12 个源
+    try:
+        from app.ops.health import _read as _health_read
+        health = _health_read()
+
+        def _latency_key(s):
+            h = health.get(s.name, {})
+            lat = h.get("latency_ms")
+            return (0 if h.get("state") == "ok" else 1, lat if lat is not None else 999999)
+
+        sources = sorted(sources, key=_latency_key)[:12]
+        logger.info(f"本轮详情爬取源数（健康排序取前12）: {len(sources)}")
+    except Exception:
+        pass
+
     cat_map = {"movie": "电影", "tv": "电视剧", "variety": "综艺", "anime": "动漫"}
     total_v = 0
     total_e = 0
