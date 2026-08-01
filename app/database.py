@@ -728,11 +728,14 @@ def get_related(video_id: int, limit: int = 8) -> list[dict]:
         if not match_parts:
             return []
         conds.append("(" + " OR ".join(match_parts) + ")")
+        excl_sql, excl_params = _adult_exclude_sql("videos")
+        if excl_sql:
+            conds.append(excl_sql[5:])  # 去掉前缀 " AND "
 
         rows = db.execute(
             f"SELECT * FROM videos WHERE {' AND '.join(conds)} "
             "ORDER BY rating DESC, updated_at DESC LIMIT ?",
-            params + [limit]
+            params + excl_params + [limit]
         ).fetchall()
     return [dict(r) for r in rows]
 
