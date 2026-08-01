@@ -322,6 +322,7 @@ async function loadDetail(videoId) {
     if (v.type) meta.push(tn[v.type] || v.type);
     if (v.year) meta.push(v.year);
     if (v.rating && v.rating > 0) meta.push("⭐ " + Number(v.rating).toFixed(1));
+    if (v.source) meta.push("来源 " + shortSource(v.source));
 
     let epHtml = "";
     if (v.episodes && v.episodes.length && v.type !== "movie") {
@@ -1196,7 +1197,13 @@ async function doSearch(q, page) {
   try {
     const data = await F("/api/search?q=" + encodeURIComponent(q) + "&page=" + page);
     const el = document.getElementById("search-results");
-    if (!data.results || !data.results.length) { el.innerHTML = '<div class="empty-view">暂无结果</div>'; return; }
+    const hint = document.getElementById("search-hint");
+    if (!data.results || !data.results.length) {
+      el.innerHTML = '<div class="empty-view">暂无结果</div>';
+      if (hint) hint.textContent = "";
+      return;
+    }
+    if (hint) hint.textContent = "共 " + (data.total || data.results.length) + " 条结果 · 方向键浏览 · Enter 打开";
     let html = "";
     for (const v of data.results) html += card(v);
     el.innerHTML = html;
@@ -1219,13 +1226,21 @@ async function F(url) {
 function card(v) {
   const badge = { movie: "电影", tv: "剧集", variety: "综艺", anime: "动漫" }[v.type] || "";
   const score = (v.douban_score && v.douban_score > 0) ? v.douban_score : v.rating;
-  return '<div class="video-card" tabindex="0" onclick="hideSearch();navigateTo(\'detail\',' + v.id + ')">' +
+  const src = shortSource(v.source);
+  const tip = (v.title || "") + (src ? "  ·  " + src : "");
+  return '<div class="video-card" tabindex="0" title="' + escAttr(tip) + '" onclick="hideSearch();navigateTo(\'detail\',' + v.id + ')">' +
     '<div class="card-img-wrap">' +
     '<div class="card-placeholder">' + esc(v.title) + '</div>' +
     '<img class="card-img" src="' + escAttr(v.cover || "") + '" loading="lazy" onerror="this.style.display=\'none\'">' +
     '</div>' +
     '<div class="card-info"><div class="card-title">' + esc(v.title) + '</div>' +
-    '<div class="card-sub">' + (badge ? '<span class="card-badge">' + badge + "</span>" : "") + (v.year ? "<span>" + v.year + "</span>" : "") + (score && score > 0 ? '<span>⭐' + Number(score).toFixed(1) + "</span>" : "") + "</div></div></div>";
+    '<div class="card-sub">' + (badge ? '<span class="card-badge">' + badge + "</span>" : "") + (v.year ? "<span>" + v.year + "</span>" : "") + (score && score > 0 ? '<span>⭐' + Number(score).toFixed(1) + "</span>" : "") + (src ? '<span class="card-source">' + esc(src) + "</span>" : "") + "</div></div></div>";
+}
+
+// 来源名精简：去掉引擎后缀，如 荐片[优](DS) -> 荐片[优]
+function shortSource(s) {
+  if (!s) return "";
+  return String(s).replace(/\s*\((DS|cat|hipy|DR2|py)\)\s*$/, "").trim();
 }
 
 /* -- History -- */

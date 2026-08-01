@@ -319,10 +319,20 @@ html, body {
   font-size: 19px; font-weight: 500;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+.video-card:focus .card-title,
+.video-card:focus-within .card-title {
+  white-space: normal; word-break: break-all;
+}
 .video-card .card-sub {
   font-size: 15px; color: var(--text-dim);
   margin-top: 4px;
   display: flex; gap: 8px;
+}
+.video-card .card-source {
+  margin-left: auto;
+  max-width: 45%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 13px; color: #9aa0b4;
 }
 .video-card .card-badge {
   padding: 2px 8px;
@@ -461,7 +471,7 @@ html, body {
   z-index: 100;
   display: flex; flex-direction: column;
   align-items: center;
-  padding: 120px 80px 40px;
+  padding: 80px 70px 30px;
 }
 .search-overlay.hidden { display: none; }
 .search-box {
@@ -493,17 +503,17 @@ html, body {
 .search-close:focus-visible { outline: 2px solid var(--border-focus); }
 
 .search-results {
-  width: 100%; max-width: 900px;
+  width: 100%; max-width: 1500px;
   flex: 1; overflow-y: auto;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
   gap: 16px;
 }
 .search-results .video-card { width: 100%; }
 .search-hint {
   color: var(--text-dim);
   font-size: 24px;
-  margin-top: 60px;
+  margin-top: 30px;
 }
 
 /* ─── 播放器状态页 ─── */
