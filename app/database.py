@@ -577,9 +577,11 @@ def _get_home_hero(db) -> dict | None:
             "total_seconds": float(row["total_seconds"] or 0),
         }
 
+    # 备用查询没有表别名，必须用默认列名 videos 重新生成排除条件
+    recent_excl, recent_params = _adult_exclude_sql()
     recent = db.execute(
-        f"SELECT * FROM videos WHERE cover != ''{excl_sql} ORDER BY updated_at DESC LIMIT 1",
-        excl_params
+        f"SELECT * FROM videos WHERE cover != ''{recent_excl} ORDER BY updated_at DESC LIMIT 1",
+        recent_params
     ).fetchone()
     if recent:
         return {

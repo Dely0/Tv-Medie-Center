@@ -118,8 +118,13 @@ async function loadHome() {
     }
     autoFocusView();
   } catch (e) {
-    el.innerHTML = '<div class="error-view">加载失败<button class="retry-btn" onclick="loadHome()">重试</button></div>';
+    el.innerHTML = '<div class="error-view">加载失败' + errDetail(e) + '<button class="retry-btn" onclick="loadHome()">重试</button></div>';
   }
+}
+
+function errDetail(e) {
+  const msg = (e && e.message) ? String(e.message).slice(0, 200) : "";
+  return msg ? '<div class="error-detail">' + esc(msg) + '</div>' : "";
 }
 
 function heroHtml(h) {
@@ -284,7 +289,7 @@ async function loadBrowsePage(direction) {
     bindTabs();
     autoFocusView();
   } catch (e) {
-    el.innerHTML = '<div class="error-view">加载失败</div>';
+    el.innerHTML = '<div class="error-view">加载失败' + errDetail(e) + '</div>';
   }
 }
 
@@ -360,7 +365,7 @@ async function loadDetail(videoId) {
     fitGridToRow(document.querySelector("#view-detail .card-grid"));
     autoFocusView();
   } catch (e) {
-    el.innerHTML = '<div class="error-view">加载失败</div>';
+    el.innerHTML = '<div class="error-view">加载失败' + errDetail(e) + '</div>';
   }
 }
 
@@ -1352,7 +1357,7 @@ async function loadHistory() {
     el.innerHTML = html;
     autoFocusView();
   } catch(e) {
-    el.innerHTML = '<div class="error-view">加载失败</div>';
+    el.innerHTML = '<div class="error-view">加载失败' + errDetail(e) + '</div>';
   }
 }
 
