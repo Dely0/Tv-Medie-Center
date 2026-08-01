@@ -1023,13 +1023,13 @@ async function loadHistory() {
 /* -- Keyboard -- */
 document.addEventListener("keydown", function(e) {
   if (_searchFocused) {
-    // 回退键（Backspace）在输入框内用于删除字符，不拦截
-    if (e.key === "Backspace") return;
-    if (e.key === "Escape") {
+    // 回退键（物理 Backspace / 遥控 BrowserBack / AHK 映射后的 Esc）
+    // 在搜索框内统一用于删除字符，不依赖浏览器默认行为与 AHK 是否运行
+    if (e.key === "Backspace" || e.key === "BrowserBack" || e.code === "BrowserBack" ||
+        e.which === 8 || e.which === 166 || e.key === "Escape") {
       e.preventDefault();
       const inp = document.getElementById("search-input");
       if (inp && inp.value) {
-        // 遥控回退键映射为 Esc：优先删除最后一个字符，删空后再按才关闭
         inp.value = inp.value.slice(0, -1);
         onSearchInput(inp.value);
       } else {
@@ -1314,7 +1314,12 @@ document.addEventListener("keydown", function(e) {
 
   // 拦截可能的回退键（搜索框聚焦时不拦截，保留删除字符能力）
   if (e.key === "Backspace" || e.key === "BrowserBack" || e.code === "BrowserBack" || e.which === 8 || e.which === 166) {
-    if (_searchFocused) return;
+    if (_searchFocused) {
+      // 搜索框内：捕获阶段先阻止浏览器默认导航（后退/离开页面），
+      // 删除字符逻辑由冒泡阶段的 _searchFocused 分支统一处理
+      e.preventDefault();
+      return;
+    }
     e.preventDefault();
     if (_searchResultsActive) {
       // 结果列表中的回退：回到搜索框继续编辑
