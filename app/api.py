@@ -433,9 +433,12 @@ def api_probe(
 # ─── 观看历史 ───
 
 @app.get("/api/history")
-def api_history(limit: int = Query(default=20, ge=1, le=100)):
-    """观看历史"""
-    return get_watch_history(limit)
+def api_history(
+    limit: int = Query(default=20, ge=1, le=100),
+    adult: bool = Query(default=False, description="是否只返回成人内容历史"),
+):
+    """观看历史（默认排除成人内容；adult=1 时只返回成人内容历史）"""
+    return {"items": get_watch_history(limit, adult=adult)}
 
 
 @app.post("/api/history")

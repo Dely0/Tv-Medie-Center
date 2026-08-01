@@ -17,9 +17,13 @@ _local = threading.local()
 
 
 def _adult_exclude_sql() -> tuple[str, list]:
-    """返回排除成人源内容的 SQL 片段与参数（成人源未启用时为空，无性能损耗）"""
-    from app.adult import source_names
-    names = source_names()
+    """返回排除成人源内容的 SQL 片段与参数。
+
+    使用“已知成人源名单”（无论开关状态），保证配置关闭后库内残留的
+    成人内容也始终不进入首页/分类/搜索/历史。
+    """
+    from app.adult import known_source_names
+    names = known_source_names()
     if not names:
         return "", []
     return f" AND source NOT IN ({','.join('?' * len(names))})", list(names)
@@ -730,11 +734,22 @@ def get_related(video_id: int, limit: int = 8) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def get_watch_history(limit: int = 20) -> list[dict]:
-    """获取观看历史 — 每个视频只返回最新一条记录"""
+def get_watch_history(limit: int = 20, adult: bool = False) -> list[dict]:
+    """获取观看历史 — 每个视频只返回最新一条记录。
+    adult=False（默认）排除成人内容；adult=True 只返回成人内容（供成人页单独展示）。"""
+    from app.adult import known_source_names
+    names = known_source_names()
+    cond_sql = ""
+    params = []
+    if names:
+        if adult:
+            cond_sql = f" AND v.source IN ({','.join('?' * len(names))})"
+        else:
+            cond_sql = f" AND v.source NOT IN ({','.join('?' * len(names))})"
+        params = list(names)
     with get_db() as db:
         rows = db.execute(
-            """
+            f"""
             SELECT h.*, v.title, v.cover, v.type, v.source,
                    e.episode_title
             FROM watch_history h
@@ -745,9 +760,10 @@ def get_watch_history(limit: int = 20) -> list[dict]:
               FROM watch_history
               GROUP BY video_id
             ) latest ON h.video_id = latest.video_id AND h.watched_at = latest.max_watched
+            WHERE 1=1{cond_sql}
             ORDER BY h.watched_at DESC
             LIMIT ?
-            """, (limit,)
+            """, params + [limit]
         ).fetchall()
     return [dict(r) for r in rows]
 

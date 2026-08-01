@@ -65,6 +65,21 @@ def source_names() -> list[str]:
     return [s.get("name", "") for s in get_adult_sources() if s.get("name")]
 
 
+def known_source_names() -> list[str]:
+    """所有已知成人源名（无论开关状态）。
+
+    用于全局隔离：即使配置已关闭，库里残留的成人内容也必须从
+    首页/分类/搜索/历史中排除，避免误入家人视野。
+    """
+    cfg = load_config()
+    names = []
+    for s in list(cfg.get("sources") or []) + list(DEFAULT_SOURCES):
+        n = s.get("name")
+        if n and n not in names:
+            names.append(n)
+    return names
+
+
 _sync_state = {"running": False, "count": 0, "last_run": None, "error": None}
 
 

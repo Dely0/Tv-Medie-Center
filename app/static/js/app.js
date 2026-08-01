@@ -222,7 +222,20 @@ async function loadBrowsePage(direction) {
     } catch (e) {}
     if (seq !== _browseReqSeq) return;
 
-    let html =
+    // 成人页：顶部单独展示成人观看历史（与普通历史隔离）
+    let adultHistoryHtml = "";
+    if (_currentType === "adult") {
+      try {
+        const hd = await F("/api/history?adult=1&limit=10");
+        const hitems = (hd && hd.items) || [];
+        if (hitems.length) {
+          adultHistoryHtml = '<div class="section"><div class="section-header"><div class="section-title">成人最近观看</div></div><div class="card-grid">' +
+            hitems.map(h => card({ id: h.video_id, title: h.title, cover: h.cover, type: h.type })).join("") +
+            '</div></div>';
+        }
+      } catch (e) {}
+    }
+    let html = adultHistoryHtml +
       renderFilterGroup("标签", tags, _currentGenre, "tag") +
       renderFilterGroup("地区", areas, _currentArea, "area") +
       renderFilterGroup("年份", years, _currentYear, "year");
@@ -983,9 +996,10 @@ async function loadHistory() {
   el.innerHTML = '<div class="loading"><div class="spinner"></div>加载中…</div>';
   try {
     const data = await F("/api/history?limit=100");
-    if (!data || !data.length) { el.innerHTML = '<div class="empty-view">暂无观看记录</div>'; return; }
+    const items = (data && data.items) || [];
+    if (!items.length) { el.innerHTML = '<div class="empty-view">暂无观看记录</div>'; return; }
     let html = '<div class="card-grid">';
-    for (const h of data) {
+    for (const h of items) {
       const label = h.episode_id ? "第" + h.episode_id + "集" : "电影";
       const onClick = "hideSearch();navigateTo('detail'," + h.video_id + ")";
       html += '<div class="video-card" tabindex="0" onclick="' + onClick + '">' +
