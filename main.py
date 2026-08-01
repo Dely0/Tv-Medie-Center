@@ -55,10 +55,19 @@ def start_online_scheduler():
 
 def main():
     init_db()
+    # 启动 drpyS 侧车（阶段 B：JS 爬虫生态）
+    from app.sidecar.drpys import ensure_started
+    ensure_started(wait_seconds=20)
     # 安装 DoH 解析回退（系统 DNS 失败时自动使用）
     from app.net import doh
     from config import DOH_ENABLED
     doh.install(DOH_ENABLED)
+    # 预热 drpyS 源注册表（拉取 /config/1，供搜索/播放链使用）
+    try:
+        from app.source_framework.drpy_source import refresh_registry
+        refresh_registry()
+    except Exception as e:
+        logger.warning(f"drpyS 注册表预热失败: {e}")
     # 加载 MacCMS 源配置
     config_path = os.path.join(os.path.dirname(__file__), "data", "maccms_sources.json")
     if os.path.exists(config_path):

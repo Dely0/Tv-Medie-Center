@@ -97,35 +97,37 @@ def _measure_candidates(candidates: list[dict], timeout: float) -> list[dict]:
     """并行测速（带缓存），返回增强后的线路列表。"""
     from app.source_selector import measure_source
     lines = []
-    with ThreadPoolExecutor(max_workers=min(len(candidates), 4)) as pool:
-        futures = {}
-        for c in candidates:
-            profile = _header_profile(c["source"])
-            futures[pool.submit(
-                measure_source, c["play_url"],
-                (profile or {}).get("referer", ""),
-                False,
-            )] = (c, profile)
-        deadline = time.time() + timeout
-        done = set()
-        try:
-            for f in as_completed(futures, timeout=timeout + 1):
-                done.add(f)
-                c, profile = futures[f]
-                try:
-                    m = f.result(timeout=max(0.1, deadline - time.time()))
-                except Exception:
-                    m = {"play_url": c["play_url"], "error": "测速异常"}
-                lines.append(_build_line(c, profile, m))
-        except FuturesTimeout:
-            # 超时：未完成的候选标记为测速超时，避免整个播放链失败
-            for f, (c, profile) in futures.items():
-                if f in done:
-                    continue
-                f.cancel()
-                lines.append(_build_line(c, profile, {
-                    "play_url": c["play_url"], "error": "测速超时",
-                }))
+    pool = ThreadPoolExecutor(max_workers=min(len(candidates), 4))
+    futures = {}
+    for c in candidates:
+        profile = _header_profile(c["source"])
+        futures[pool.submit(
+            measure_source, c["play_url"],
+            (profile or {}).get("referer", ""),
+            False,
+        )] = (c, profile)
+    deadline = time.time() + timeout
+    done = set()
+    try:
+        for f in as_completed(futures, timeout=timeout + 1):
+            done.add(f)
+            c, profile = futures[f]
+            try:
+                m = f.result(timeout=max(0.1, deadline - time.time()))
+            except Exception:
+                m = {"play_url": c["play_url"], "error": "测速异常"}
+            lines.append(_build_line(c, profile, m))
+    except FuturesTimeout:
+        # 超时：未完成的候选标记为测速超时，避免整个播放链失败
+        for f, (c, profile) in futures.items():
+            if f in done:
+                continue
+            f.cancel()
+            lines.append(_build_line(c, profile, {
+                "play_url": c["play_url"], "error": "测速超时",
+            }))
+    finally:
+        pool.shutdown(wait=False)
     lines.sort(key=lambda x: (-(x.get("speed_kbs") or -1), 0 if x.get("current") else 1))
     return lines
 

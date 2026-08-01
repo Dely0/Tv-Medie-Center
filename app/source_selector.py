@@ -242,7 +242,7 @@ def find_best_source(video_id: int, episode: int = None, max_candidates: int = 5
 
 def _supplement_candidates(cache_key, title, norm, episode, exclude, current_source, max_candidates):
     """后台补充：源站搜索同标题视频 → 解析剧集 → 加入候选缓存。"""
-    from app.maccms_source import get_maccms_crawlable_sources
+    from app.source_framework.registry import get_search_sources
     cached = _CANDIDATE_CACHE.get(cache_key)
     candidates = list(cached[1]) if cached else []
 
@@ -257,7 +257,7 @@ def _supplement_candidates(cache_key, title, norm, episode, exclude, current_sou
             e = episodes[0]
         return (e.get("play_url") or None), (e.get("episode_title") or f"第{e.get('episode_num')}集")
 
-    for src in get_maccms_crawlable_sources()[:2]:
+    for src in get_search_sources()[:3]:
         if len(candidates) >= max_candidates:
             break
         if src.name in exclude or src.name == current_source:

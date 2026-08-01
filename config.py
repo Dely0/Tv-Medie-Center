@@ -59,3 +59,22 @@ PLAY_LINES_MEASURE_TIMEOUT = 8  # 播放链测速总超时（秒）
 # 本地代理
 HLS_PROXY_MAX_CACHE_MB = 512  # HLS 分片缓存上限（预留，当前实现为透传）
 HLS_PROXY_TIMEOUT = 20        # 代理请求超时（秒）
+
+# ============ 阶段 B：drpyS JS 爬虫生态 ============
+
+DRPYS_ENABLED = True
+DRPYS_BASE_URL = "http://127.0.0.1:5757"   # drpyS 默认端口（本地服务）
+DRPYS_API_PWD = "dzyyds"                    # drpyS 接口密码（.env.development 默认值）
+DRPYS_CONFIG_TTL = 600                      # 源配置缓存（秒）
+DRPYS_SEARCH_TIMEOUT = 8                    # 单源搜索超时（秒）
+DRPYS_CRAWL_PAGES = 3                       # drpy 源每个分类轻量回填页数
+
+SOURCE_REGISTRY_FILE = os.path.join(DATA_DIR, "source_registry.json")
+DRPY_ADULT_NAMES_FILE = os.path.join(DATA_DIR, "drpy_adult_sources.json")
+
+# 侧车目录（Node/drpys 均装在 D 盘项目内，避免占用 C 盘）
+SIDECAR_DIR = os.path.join(BASE_DIR, "sidecar")
+DRPYS_DIR = os.path.join(SIDECAR_DIR, "drpys")
+NODE_DIR = os.path.join(SIDECAR_DIR, "node")
+NPM_CACHE_DIR = os.path.join(SIDECAR_DIR, "npm-cache")
+DRPYS_LOG_DIR = os.path.join(SIDECAR_DIR, "logs")

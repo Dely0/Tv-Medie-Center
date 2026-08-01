@@ -89,9 +89,9 @@ def _check_inner(src):
     name = getattr(src, "name", "unknown")
     t0 = time.time()
     if hasattr(src, "_request"):
-        params = {"ac": "list", "at": "json", "pagesize": "5"}
-        data = src._request(params, timeout=8)
-        ok = bool(data and data.get("list"))
+        data = src._request({"ac": "list"}, timeout=8)
+        # drpy 源首页可能 list 为空但 class（分类）正常，也算存活
+        ok = bool(data and (data.get("list") or data.get("class")))
     else:
         items = src.get_list_page("movie", 1, 5)
         ok = bool(items)
@@ -102,15 +102,20 @@ def _check_inner(src):
 
 def run_health_check(sources=None, force: bool = True) -> dict:
     """并行检查所有源，更新状态文件。返回摘要。"""
-    from app.maccms_source import get_maccms_crawlable_sources
-    src_list = list(sources) if sources is not None else get_maccms_crawlable_sources()
+    if sources is not None:
+        src_list = list(sources)
+    else:
+        from app.source_framework.registry import get_drpy_enabled_sources
+        from app.maccms_source import get_maccms_crawlable_sources
+        src_list = get_maccms_crawlable_sources() + get_drpy_enabled_sources()
     if not src_list:
         return {"checked": 0, "ok": 0, "dead": 0, "sources": []}
 
     summary = {"checked": 0, "ok": 0, "dead": 0, "sources": []}
-    with ThreadPoolExecutor(max_workers=min(len(src_list), 4)) as pool:
-        futures = [pool.submit(_check_one, s) for s in src_list]
-        for f in as_completed(futures, timeout=60):
+    pool = ThreadPoolExecutor(max_workers=min(len(src_list), 4))
+    futures = [pool.submit(_check_one, s) for s in src_list]
+    try:
+        for f in as_completed(futures, timeout=150):
             try:
                 name, ok, latency, error = f.result(timeout=2)
             except Exception:
@@ -130,6 +135,10 @@ def run_health_check(sources=None, force: bool = True) -> dict:
                 "checked_at": entry.get("checked_at"),
                 "last_error": entry.get("last_error", ""),
             })
+    except Exception:
+        pass
+    finally:
+        pool.shutdown(wait=False)
     logger.info(f"健康检查完成: 检查 {summary['checked']}, 正常 {summary['ok']}, 隔离 {summary['dead']}")
     return summary
 

@@ -45,6 +45,14 @@ def _sync_once() -> dict:
         primary = os.path.join(os.path.dirname(__file__), "..", "..", "data", "maccms_sources.json")
         get_manager().load_from_config(primary)
 
+    # 刷新 drpyS 源注册表（拉取最新 /config/1）
+    try:
+        from app.source_framework.drpy_source import refresh_registry
+        result["drpy_refresh"] = refresh_registry(force=True)
+    except Exception as e:
+        logger.warning(f"drpyS 注册表刷新失败: {e}")
+        result["drpy_refresh"] = False
+
     return result
 
 

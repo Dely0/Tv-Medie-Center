@@ -10,7 +10,14 @@ data/adult_config.json
 data/source_speed_cache.json
 data/source_health.json
 data/parse_sources.json
+data/source_registry.json
+data/drpy_adult_sources.json
 data/server.log
+sidecar/node/
+sidecar/drpys/
+sidecar/logs/
+sidecar/npm-cache/
+sidecar/*.tar.gz
 *.txt
 start.bat
 *.zip

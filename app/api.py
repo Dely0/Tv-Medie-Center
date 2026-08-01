@@ -125,29 +125,33 @@ def api_search(
     local_seen = {r["source_url"] for r in local_results}
 
     # 2. 并行远程搜索
-    sources = get_maccms_crawlable_sources()
+    from app.source_framework.registry import get_search_sources
+    sources = get_search_sources()
     remote_items = []
 
     if sources:
         wall_timeout = SEARCH_TIMEOUT + 3  # 给 fallback 留余量
         deadline = time.time() + wall_timeout + 2
-        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(sources), 4)) as pool:
-            futures = {pool.submit(src.search, q, SEARCH_TIMEOUT): src for src in sources}
-            try:
-                for f in concurrent.futures.as_completed(futures, timeout=wall_timeout):
-                    try:
-                        items = f.result(timeout=max(0, deadline - time.time()))
-                        for item in items:
-                            su = item.get("source_url", "")
-                            if su and su not in local_seen:
-                                local_seen.add(su)
-                                remote_items.append(item)
-                    except concurrent.futures.TimeoutError:
-                        logger.warning(f"搜索单个源超时")
-                    except Exception:
-                        continue
-            except concurrent.futures.TimeoutError:
-                logger.warning(f"搜索整体超时 ({wall_timeout}s), 已获取 {len(remote_items)} 条远程结果")
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=min(len(sources), 4))
+        futures = {pool.submit(src.search, q, SEARCH_TIMEOUT): src for src in sources}
+        try:
+            for f in concurrent.futures.as_completed(futures, timeout=wall_timeout):
+                try:
+                    items = f.result(timeout=max(0, deadline - time.time()))
+                    for item in items:
+                        su = item.get("source_url", "")
+                        if su and su not in local_seen:
+                            local_seen.add(su)
+                            remote_items.append(item)
+                except concurrent.futures.TimeoutError:
+                    logger.warning(f"搜索单个源超时")
+                except Exception:
+                    continue
+        except concurrent.futures.TimeoutError:
+            logger.warning(f"搜索整体超时 ({wall_timeout}s), 已获取 {len(remote_items)} 条远程结果")
+        finally:
+            # 不等待未完成任务（慢源由后台自行结束），避免搜索接口卡住
+            pool.shutdown(wait=False)
         logger.info(f"搜索「{q}」: 本地 {len(local_results)} 条 + 远程 {len(remote_items)} 条")
 
     # 3. 远程结果入库（获得真实 id）
@@ -197,22 +201,24 @@ def api_video_detail(video_id: int):
 
         # 优先用同名的源
         if source_name:
-            for src in get_maccms_manager().get_all():
-                if src.name == source_name:
-                    try:
-                        info, episodes = src.get_detail(source_url)
-                        if episodes:
-                            for ep in episodes:
-                                upsert_episode(video_id, ep)
-                            fetched = True
-                            logger.info(f"从 {source_name} 拉取到 {len(episodes)} 集")
-                    except Exception:
-                        pass
-                    break
+            from app.source_framework.registry import get_source_by_name, get_search_sources
+            src = get_source_by_name(source_name)
+            if src:
+                try:
+                    info, episodes = src.get_detail(source_url)
+                    if episodes:
+                        for ep in episodes:
+                            upsert_episode(video_id, ep)
+                        fetched = True
+                        logger.info(f"从 {source_name} 拉取到 {len(episodes)} 集")
+                except Exception:
+                    pass
 
         # 如果同名源没拉到, 遍历所有源
         if not fetched:
-            for src in get_maccms_manager().get_all():
+            for src in get_search_sources():
+                if src.name == source_name:
+                    continue
                 try:
                     info, episodes = src.get_detail(source_url)
                     if episodes:
@@ -271,7 +277,8 @@ def api_play(
 
     # 2. 没有剧集时才尝试从源解析（电影无剧集的情况）
     if not play_url:
-        all_sources = get_all_sources() + get_maccms_crawlable_sources()
+        from app.source_framework.registry import get_search_sources
+        all_sources = get_all_sources() + get_search_sources()
         for src in all_sources:
             try:
                 resolved = src.get_play_url(detail["source_url"])
@@ -317,7 +324,8 @@ def api_video_alternates(
         return {"alternates": []}
 
     current_source = detail.get("source", "")
-    sources = get_maccms_crawlable_sources()
+    from app.source_framework.registry import get_search_sources
+    sources = get_search_sources()
     alternates = []
 
     def find_alternate(src):
@@ -356,18 +364,20 @@ def api_video_alternates(
             return None
 
     if sources:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(sources), 4)) as pool:
-            futures = [pool.submit(find_alternate, s) for s in sources]
-            try:
-                for f in concurrent.futures.as_completed(futures, timeout=15):
-                    try:
-                        r = f.result(timeout=1)
-                    except Exception:
-                        continue
-                    if r:
-                        alternates.append(r)
-            except concurrent.futures.TimeoutError:
-                logger.warning(f"查找备用源超时，已找到 {len(alternates)} 个")
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=min(len(sources), 4))
+        futures = [pool.submit(find_alternate, s) for s in sources]
+        try:
+            for f in concurrent.futures.as_completed(futures, timeout=15):
+                try:
+                    r = f.result(timeout=1)
+                except Exception:
+                    continue
+                if r:
+                    alternates.append(r)
+        except concurrent.futures.TimeoutError:
+            logger.warning(f"查找备用源超时，已找到 {len(alternates)} 个")
+        finally:
+            pool.shutdown(wait=False)
 
     return {"alternates": alternates[:4]}
 
@@ -510,6 +520,54 @@ def api_ops_sync_now():
     return sync_now()
 
 
+# ---------- drpyS 爬虫生态 ----------
+
+@app.get("/api/drpy/status")
+def api_drpy_status():
+    """drpyS 源列表与启用状态。"""
+    from app.source_framework.drpy_source import get_registry, recover_name
+    from app.ops.health import is_source_dead
+    from app.sidecar.drpys import is_ready
+    reg = get_registry()
+    sources = []
+    for s in reg.get_all():
+        sources.append({
+            "key": s.key,
+            "name": s.name,
+            "api": s.api_url,
+            "type": s.type,
+            "enabled": s.enabled,
+            "adult": s.adult,
+            "searchable": s.searchable,
+            "dead": is_source_dead(s.name),
+        })
+    return {
+        "sidecar_ready": is_ready(),
+        "total": len(sources),
+        "enabled": sum(1 for s in sources if s["enabled"]),
+        "adult": sum(1 for s in sources if s["adult"]),
+        "sources": sources,
+    }
+
+
+@app.post("/api/drpy/refresh")
+def api_drpy_refresh():
+    """强制刷新 drpyS 源注册表（后台执行）。"""
+    from app.source_framework.drpy_source import refresh_registry
+    import threading
+    ok = {}
+
+    def run():
+        nonlocal ok
+        try:
+            ok = {"success": refresh_registry(force=True)}
+        except Exception as e:
+            ok = {"error": str(e)}
+
+    threading.Thread(target=run, daemon=True).start()
+    return {"success": True, "message": "drpyS 源注册表刷新已启动"}
+
+
 # ─── 观看历史 ───
 
 @app.get("/api/history")
@@ -561,7 +619,19 @@ def api_sources():
     html_sources = get_all_sources()
     maccms_sources = get_maccms_manager().get_all()
     from app.ops.health import _read as _health_read
+    from app.source_framework.drpy_source import get_registry
     health = _health_read()
+    drpy_sources = [
+        {
+            "name": s.name,
+            "base_url": s.api_url,
+            "enabled": s.enabled,
+            "type": "drpy",
+            "adult": s.adult,
+            "health": health.get(s.name, {}),
+        }
+        for s in get_registry().get_all()
+    ]
     return {
         "sources": [
             {"name": s.name, "base_url": s.base_url, "enabled": s.enabled, "type": "html"}
@@ -575,7 +645,7 @@ def api_sources():
                 "health": health.get(s.name, {}),
             }
             for s in maccms_sources
-        ]
+        ] + drpy_sources
     }
 
 

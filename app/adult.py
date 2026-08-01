@@ -124,6 +124,16 @@ def known_source_names() -> list[str]:
         n = s.get("name")
         if n and n not in names:
             names.append(n)
+    # 附加：drpyS 生态中自动识别/手动标记的成人源（读运行时缓存，无网络）
+    try:
+        import config as _app_cfg
+        with open(_app_cfg.DRPY_ADULT_NAMES_FILE, "r", encoding="utf-8") as f:
+            extra = json.load(f).get("names") or []
+        for n in extra:
+            if n and n not in names:
+                names.append(n)
+    except Exception:
+        pass
     return names
 
 

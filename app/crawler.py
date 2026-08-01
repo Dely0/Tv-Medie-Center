@@ -113,6 +113,33 @@ def run_crawl():
             except Exception as e:
                 logger.error(f"爬取源 {source.name} 失败: {e}")
 
+        # drpyS 轻量回填（每个分类前几页，不拉详情，节省时间）
+        try:
+            from app.source_framework.registry import get_drpy_enabled_sources
+            from app.source_framework.drpy_source import recover_name
+            from config import DRPYS_CRAWL_PAGES
+            drpy_sources = get_drpy_enabled_sources()
+            for src in drpy_sources:
+                set_progress(f"[drpy] 回填: {src.name}")
+                for cat in ("movie", "tv", "variety", "anime"):
+                    try:
+                        for pg in range(1, DRPYS_CRAWL_PAGES + 1):
+                            items = src.list_page(cat, pg, pagesize=60)
+                            if not items:
+                                break
+                            for item in items:
+                                if not item.get("source_url"):
+                                    continue
+                                try:
+                                    upsert_video(item)
+                                    total_v += 1
+                                except Exception:
+                                    continue
+                    except Exception as e:
+                        logger.warning(f"[drpy] {src.name} 分类 {cat} 回填失败: {e}")
+        except Exception as e:
+            logger.warning(f"drpy 回填失败: {e}")
+
         rebuild_fts()
         elapsed = time.time() - start_time
         set_progress(f"爬取完成! 耗时 {elapsed:.0f}秒, 共 {total_v} 部视频, {total_e} 集")
