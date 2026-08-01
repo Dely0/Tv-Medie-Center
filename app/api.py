@@ -568,6 +568,16 @@ def api_drpy_refresh():
     return {"success": True, "message": "drpyS 源注册表刷新已启动"}
 
 
+@app.post("/api/drpy/backfill")
+def api_drpy_backfill(
+    pages: int = Query(default=2, ge=1, le=10, description="每个分类回填页数"),
+):
+    """手动触发 drpy 源内容回填（后台执行）。"""
+    from app.crawler import start_drpy_backfill
+    start_drpy_backfill(pages=pages)
+    return {"success": True, "message": f"drpy 回填已启动（每分类 {pages} 页）"}
+
+
 # ─── 观看历史 ───
 
 @app.get("/api/history")

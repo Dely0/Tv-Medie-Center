@@ -182,7 +182,11 @@ class DrpySource:
             if vid is not None:
                 seen.add(vid)
             uniq.append(i)
-        return self._normalize_list(uniq[:pagesize])
+        normalized = self._normalize_list(uniq[:pagesize])
+        # 分类接口按请求的分类返回，直接标注类型（避免剧名不含关键词被误判为电影）
+        for it in normalized:
+            it["type"] = category
+        return normalized
 
     def get_detail(self, url_or_id: str) -> tuple[dict, list[dict]]:
         vod_id = self._extract_id(url_or_id)

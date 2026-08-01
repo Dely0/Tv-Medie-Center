@@ -68,6 +68,12 @@ def main():
         refresh_registry()
     except Exception as e:
         logger.warning(f"drpyS 注册表预热失败: {e}")
+    # 启动 drpy 轻量回填（后台独立线程，先灌 2 页数据让新源内容尽快出现在页面）
+    try:
+        from app.crawler import start_drpy_backfill
+        start_drpy_backfill(pages=2, delay_seconds=3.0)
+    except Exception as e:
+        logger.warning(f"drpy 回填启动失败: {e}")
     # 加载 MacCMS 源配置
     config_path = os.path.join(os.path.dirname(__file__), "data", "maccms_sources.json")
     if os.path.exists(config_path):

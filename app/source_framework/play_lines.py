@@ -14,6 +14,7 @@ logger = logging.getLogger("play_lines")
 
 _LINES_CACHE = {}
 _LINES_LOCK = threading.Lock()
+_SUPPLEMENTING = set()
 _LINES_TTL = 600
 
 
@@ -175,6 +176,68 @@ def _background_resolve(cache_key: str, candidates: list[dict]):
         logger.debug(f"后台解析失败: {e}")
 
 
+def _background_supplement(cache_key: str, video_id: int, title: str, norm: str,
+                           episode: int | None, current_source: str):
+    """后台跨源补充：在所有启用源（含 drpy）中搜索同标题视频并解析剧集，
+    把新线路测速后合并进播放链缓存。"""
+    from app.source_framework.registry import get_search_sources
+    try:
+        with _LINES_LOCK:
+            cached = _LINES_CACHE.get(cache_key)
+        lines = list(cached[1]) if cached else []
+        have = {l.get("source") for l in lines}
+        additions = []
+        for src in get_search_sources():
+            if len(lines) + len(additions) >= cfg.PLAY_LINES_LIMIT:
+                break
+            if src.name in have or src.name == current_source:
+                continue
+            try:
+                items = src.search(title, timeout=6)
+            except Exception:
+                continue
+            match = None
+            for it in items:
+                if normalize_title(it.get("title") or "") == norm:
+                    match = it
+                    break
+            if not match:
+                continue
+            try:
+                _, eps2 = src.get_detail(match.get("source_url", ""))
+            except Exception:
+                continue
+            ep, ep_title = _pick_episode(eps2, episode)
+            if ep and ep.get("play_url"):
+                additions.append({
+                    "video_id": None,
+                    "source": src.name,
+                    "play_url": ep["play_url"],
+                    "episode_title": ep_title,
+                    "current": False,
+                })
+                have.add(src.name)
+
+        if not additions:
+            return
+        measured = _measure_candidates(additions, min(6.0, cfg.PLAY_LINES_MEASURE_TIMEOUT))
+        with _LINES_LOCK:
+            cached = _LINES_CACHE.get(cache_key)
+            lines = list(cached[1]) if cached else []
+            existing_urls = {l.get("play_url") for l in lines}
+            for m in measured:
+                if m.get("play_url") and m["play_url"] not in existing_urls:
+                    lines.append(m)
+                    existing_urls.add(m["play_url"])
+            lines.sort(key=lambda x: (-(x.get("speed_kbs") or -1), 0 if x.get("current") else 1))
+            _LINES_CACHE[cache_key] = (time.time(), lines)
+        logger.info(f"播放链后台补充: {cache_key} 新增 {len(measured)} 条线路")
+    except Exception as e:
+        logger.debug(f"播放链后台补充失败: {e}")
+    finally:
+        _SUPPLEMENTING.discard(cache_key)
+
+
 def get_play_lines(video_id: int, episode: int | None = None, refresh: bool = False) -> dict:
     """获取播放链：本地候选 -> 测速排序 -> 后台嗅探补充。"""
     cache_key = f"{video_id}:{episode or 0}"
@@ -189,6 +252,20 @@ def get_play_lines(video_id: int, episode: int | None = None, refresh: bool = Fa
     lines = _measure_candidates(candidates, cfg.PLAY_LINES_MEASURE_TIMEOUT)
     with _LINES_LOCK:
         _LINES_CACHE[cache_key] = (time.time(), lines)
+
+    # 线路不足时，后台跨全部源搜索补充（含 drpy 新源），不阻塞本次返回
+    if len(lines) < cfg.PLAY_LINES_LIMIT and cache_key not in _SUPPLEMENTING:
+        _SUPPLEMENTING.add(cache_key)
+        detail = get_video_detail(video_id)
+        title = (detail or {}).get("title", "")
+        norm = normalize_title(title)
+        current_source = (detail or {}).get("source", "")
+        if norm:
+            threading.Thread(
+                target=_background_supplement,
+                args=(cache_key, video_id, title, norm, episode, current_source),
+                daemon=True,
+            ).start()
 
     # 后台嗅探非直链候选（不阻塞本次返回）
     need_resolve = any(

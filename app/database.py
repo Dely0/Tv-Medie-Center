@@ -311,6 +311,7 @@ def get_videos_by_type(type_: str, page: int = 1, page_size: int = 30,
             order_by = (
                 "ORDER BY "
                 "(EXISTS(SELECT 1 FROM douban_ranks r WHERE r.video_id = videos.id AND r.category = ?)) DESC, "
+                "CASE WHEN source_url LIKE 'drpy://%' THEN 1 ELSE 0 END DESC, "
                 "COALESCE(NULLIF(douban_score,0), NULLIF(rating,0)) DESC, "
                 "updated_at DESC"
             )
