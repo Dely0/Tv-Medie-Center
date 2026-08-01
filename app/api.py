@@ -549,6 +549,32 @@ def api_maccms_save(
     return {"success": True, "message": f"源 '{name}' 已保存，请触发爬取以获取数据"}
 
 
+@app.post("/api/maccms/update-remote")
+def api_maccms_update_remote():
+    """从远程仓库拉取最新视频源配置并热加载（快速换源）"""
+    from app.source_updater import update_sources_from_remote
+    return update_sources_from_remote()
+
+
+@app.post("/api/douban/sync")
+def api_douban_sync():
+    """手动同步豆瓣热播榜到本地（匹配入库 + 回填评分，后台执行）"""
+    from app.douban import sync_douban_hot
+    import threading
+    result = {}
+
+    def run():
+        nonlocal result
+        try:
+            result = sync_douban_hot()
+        except Exception as e:
+            result = {"error": str(e)}
+
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    return {"success": True, "message": "豆瓣同步已在后台启动"}
+
+
 # ─── 分类列表 ───
 
 @app.get("/api/categories")

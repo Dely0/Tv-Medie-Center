@@ -1,5 +1,7 @@
 """TV Media Center — 入口"""
 import os
+import time
+import threading
 import uvicorn
 import logging
 from app.api import app
@@ -9,6 +11,39 @@ from app.maccms_source import load_sources
 from config import PORT
 
 logger = logging.getLogger("main")
+
+
+def _run_online_tasks():
+    """后台任务：拉取远程视频源配置 + 同步豆瓣热播榜（失败静默降级）"""
+    try:
+        from app.source_updater import update_sources_from_remote
+        r = update_sources_from_remote()
+        if r.get("success"):
+            logger.info(f"视频源配置已自动更新: {r.get('count')} 个源")
+        else:
+            logger.info(f"视频源自动更新跳过: {r.get('error')}")
+    except Exception as e:
+        logger.warning(f"视频源自动更新失败: {e}")
+
+    try:
+        from app.douban import sync_douban_hot
+        stats = sync_douban_hot()
+        logger.info(f"豆瓣热播同步完成: 匹配 {stats.get('matched')}，未匹配 {stats.get('unmatched')}")
+    except Exception as e:
+        logger.warning(f"豆瓣同步失败: {e}")
+
+
+def start_online_scheduler():
+    """启动时立即执行一次，之后每 24 小时执行一次"""
+    def loop():
+        _run_online_tasks()
+        while True:
+            time.sleep(24 * 3600)
+            _run_online_tasks()
+
+    t = threading.Thread(target=loop, daemon=True)
+    t.start()
+    logger.info("在线任务调度器已启动（远程换源 + 豆瓣榜单，24小时周期）")
 
 
 def main():
@@ -22,6 +57,8 @@ def main():
         logger.info(f"已加载 {count} 个 MacCMS 视频源")
     # 启动爬虫定时器（后台）
     start_crawler_scheduler()
+    # 启动在线任务（远程换源 + 豆瓣榜单）
+    start_online_scheduler()
     # 启动服务（使用 bat 脚本打开浏览器，会带 --start-fullscreen）
     uvicorn.run(app, host="0.0.0.0", port=PORT, log_level="info")
 

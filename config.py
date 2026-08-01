@@ -20,6 +20,9 @@ REQUEST_TIMEOUT = 15
 # 搜索超时（秒）— 交互式搜索用更短的超时
 SEARCH_TIMEOUT = 5
 
+# 远程视频源配置（快速换源：应用启动/手动触发时拉取并热加载）
+REMOTE_SOURCES_URL = "https://raw.githubusercontent.com/Dely0/Tv-Medie-Center/main/data/maccms_sources.json"
+
 # 用户代理轮换
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",

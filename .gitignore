@@ -5,6 +5,7 @@ __pycache__/
 data/media.db
 data/media.db-shm
 data/media.db-wal
+data/douban_cache.json
 data/server.log
 *.txt
 start.bat

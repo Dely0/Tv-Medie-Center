@@ -1,4 +1,5 @@
 {
+  "_version": 1,
   "_说明": "MacCMS 视频源配置文件 — 按优先级排序，越靠前越优先使用",
   "_说明2": "量子资源 (lziapi) 经测试资源最全, 支持多集电视剧完整拉取",
   "sources": [
@@ -11,6 +12,28 @@
         "tv": "13,14,15,16,30,31,32,33",
         "variety": "34,35,36",
         "anime": "38,39,40"
+      }
+    },
+    {
+      "name": "百度云资源",
+      "base_url": "https://api.apibdzy.com",
+      "enabled": true,
+      "category_map": {
+        "movie": "6,7,8,9,10,11,12",
+        "tv": "13,14,15,16,17,18,19,20,21,22",
+        "variety": "25,26,27,28",
+        "anime": "29,30,31,32"
+      }
+    },
+    {
+      "name": "艾旦蓝光",
+      "base_url": "https://lovedan.net",
+      "enabled": true,
+      "category_map": {
+        "movie": "1",
+        "tv": "2",
+        "variety": "3",
+        "anime": "4"
       }
     },
     {
