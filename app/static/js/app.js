@@ -551,8 +551,10 @@ function updateDiagPanel() {
   document.getElementById("diag-progress").textContent = video ? fmtTime(video.currentTime) + " / " + fmtTime(video.duration) : "—";
   const lineEl = document.getElementById("diag-line");
   if (lineEl) {
-    lineEl.textContent = _lines.length
-      ? (Math.max(0, _lineIndex + 1) + "/" + _lines.length + " · " + (_currentSourceName || ""))
+    const { usable, usableIndex } = currentLineMetrics();
+    const pos = usableIndex >= 0 ? usableIndex + 1 : "—";
+    lineEl.textContent = usable.length
+      ? (pos + "/" + usable.length + " · " + (_currentSourceName || ""))
       : (_currentSourceName || "—");
   }
   const errEl = document.getElementById("diag-hlserr");
@@ -1089,18 +1091,26 @@ function clearLineRefreshTimer() {
 function updateLineButton() {
   const btn = document.getElementById("btn-line");
   if (!btn) return;
-  // 只统计可用线路（无错误），不可用的线路不参与切换也不计入总数
+  const { usable, usableIndex } = currentLineMetrics();
+  const pos = usableIndex >= 0 ? usableIndex + 1 : "—";
+  btn.textContent = usable.length > 1
+    ? "线路 " + pos + "/" + usable.length
+    : "线路";
+}
+
+// 统一口径：可用线路（无错误）与当前所在位置（按当前播放地址匹配）
+function currentLineMetrics() {
   const usable = _lines.filter(l => l && l.play_url && !l.error);
-  let idx = -1;
+  let usableIndex = -1;
   for (let i = 0; i < _lines.length; i++) {
-    if (_lines[i].current || _lines[i].play_url === _currentUrl) {
-      idx = usable.indexOf(_lines[i]);
+    const line = _lines[i];
+    const proxied = linePlayUrl(line);
+    if (line.current || line.play_url === _currentUrl || (proxied && proxied === _currentUrl)) {
+      usableIndex = usable.indexOf(line);
       break;
     }
   }
-  btn.textContent = usable.length > 1
-    ? "线路 " + Math.max(0, idx + 1) + "/" + usable.length
-    : "线路";
+  return { usable: usable, usableIndex: usableIndex };
 }
 
 // 手动切换线路（播放条“线路”按钮）
