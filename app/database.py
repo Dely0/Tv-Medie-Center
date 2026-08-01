@@ -16,17 +16,17 @@ logger = logging.getLogger("database")
 _local = threading.local()
 
 
-def _adult_exclude_sql() -> tuple[str, list]:
-    """返回排除成人源内容的 SQL 片段与参数。
+def _adult_exclude_sql(column: str = "videos") -> tuple[str, list]:
+    """返回排除成人内容的 SQL 片段与参数（来源属于成人源 或 标题含成人关键词）。
 
-    使用“已知成人源名单”（无论开关状态），保证配置关闭后库内残留的
-    成人内容也始终不进入首页/分类/搜索/历史。
+    无论开关状态始终生效，保证成人内容不进入首页/分类/历史。
+    column 为表别名（如 'videos' 或 'v'），避免与 FTS 虚拟表列名歧义。
     """
-    from app.adult import known_source_names
-    names = known_source_names()
-    if not names:
+    from app.adult import adult_cond_sql
+    cond, params = adult_cond_sql(column)
+    if not cond:
         return "", []
-    return f" AND source NOT IN ({','.join('?' * len(names))})", list(names)
+    return f" AND NOT {cond}", params
 
 
 def get_conn() -> sqlite3.Connection:
@@ -203,11 +203,12 @@ def _init_fts(db: sqlite3.Connection):
 
 # ─── 查询方法 ───
 
-def search_videos(keyword: str, page: int = 1, page_size: int = 30) -> tuple[list[dict], int]:
-    """搜索视频：trigram 支持中文子串；短词/特殊字符回退 LIKE"""
+def search_videos(keyword: str, page: int = 1, page_size: int = 30,
+                  include_adult: bool = False) -> tuple[list[dict], int]:
+    """搜索视频：trigram 支持中文子串；短词/特殊字符回退 LIKE。
+    include_adult=True 时（成人开关开启）允许返回成人内容，否则始终排除。"""
     offset = (page - 1) * page_size
     match_q = None
-    excl_sql, excl_params = _adult_exclude_sql()
     with get_db() as db:
         total = 0
         # trigram 至少需要 3 个字符，短词直接用 LIKE
@@ -215,6 +216,7 @@ def search_videos(keyword: str, page: int = 1, page_size: int = 30) -> tuple[lis
             # 用短语查询避免关键字中的 FTS 运算符（引号、冒号等）导致语法错误
             match_q = '"' + keyword.replace('"', '""') + '"'
             try:
+                excl_sql, excl_params = ("" , []) if include_adult else _adult_exclude_sql("v")
                 count_row = db.execute(
                     "SELECT COUNT(*) FROM videos_fts fts JOIN videos v ON v.id = fts.rowid "
                     f"WHERE fts MATCH ?{excl_sql}",
@@ -236,6 +238,7 @@ def search_videos(keyword: str, page: int = 1, page_size: int = 30) -> tuple[lis
         else:
             # FTS 不匹配（短词/特殊字符场景），用 LIKE 保底
             like = f"%{keyword}%"
+            excl_sql, excl_params = ("", []) if include_adult else _adult_exclude_sql("videos")
             count_row = db.execute(
                 f"SELECT COUNT(*) FROM videos WHERE (title LIKE ? OR description LIKE ? OR actors LIKE ? OR director LIKE ?){excl_sql}",
                 (like, like, like, like) + tuple(excl_params)
@@ -299,7 +302,7 @@ def get_videos_by_type(type_: str, page: int = 1, page_size: int = 30,
             conds_all = ["type=?"] + conds
             excl_sql, excl_params = _adult_exclude_sql()
             if excl_sql:
-                conds_all.append(excl_sql.lstrip(" AND "))
+                conds_all.append(excl_sql[5:])  # 去掉前缀 " AND "
             params_all = [type_] + params + excl_params
             where = " WHERE " + " AND ".join(conds_all)
             count_row = db.execute(f"SELECT COUNT(*) FROM videos{where}", params_all).fetchone()
@@ -491,24 +494,24 @@ def get_home_data() -> dict:
         reserved["hot"] = take(db.execute(
             f"""SELECT v.* FROM douban_ranks r
                JOIN videos v ON v.id = r.video_id
-               WHERE 1=1{excl_sql}
+               WHERE 1=1{_adult_exclude_sql('v')[0]}
                ORDER BY r.rank ASC, v.updated_at DESC
                LIMIT 60""",
-            excl_params
+            _adult_exclude_sql('v')[1]
         ).fetchall())
         if len(reserved["hot"]) < 20:
             # 豆瓣榜不足时用源站热度/站内观看/高分混合兜底
             reserved["hot"].extend(take(db.execute(
                 f"""SELECT v.*, COUNT(h.id) AS local_views
                    FROM videos v LEFT JOIN watch_history h ON h.video_id = v.id
-                   WHERE (v.hits_week > 0 OR v.hits > 0 OR v.douban_score > 0 OR v.rating > 0){excl_sql}
+                   WHERE (v.hits_week > 0 OR v.hits > 0 OR v.douban_score > 0 OR v.rating > 0){_adult_exclude_sql('v')[0]}
                    GROUP BY v.id
                    ORDER BY
                      (COALESCE(v.hits_week,0)*100 + COALESCE(v.hits,0)*20 + COUNT(h.id)*250) DESC,
                      COALESCE(NULLIF(v.douban_score,0), NULLIF(v.rating,0)) DESC,
                      v.updated_at DESC
                    LIMIT 60""",
-                excl_params
+                _adult_exclude_sql('v')[1]
             ).fetchall(), 20 - len(reserved["hot"])))
         reserved["recommend"] = take(get_recommendations(20))
         reserved["recent"] = take(db.execute(
@@ -540,7 +543,7 @@ def get_home_data() -> dict:
 
 def _get_home_hero(db) -> dict | None:
     """最近观看记录（有进度）作为继续观看；否则取最近更新精选"""
-    excl_sql, excl_params = _adult_exclude_sql()
+    excl_sql, excl_params = _adult_exclude_sql("v")
     row = db.execute(
         f"""SELECT h.video_id, h.episode_id, h.progress_seconds, h.total_seconds,
                   v.title, v.cover, v.type
@@ -605,7 +608,7 @@ def get_recommendations(limit: int = 8) -> list[dict]:
     常看标签 → 豆瓣标签推荐 → 源站匹配入库。无池时回退豆瓣热播高分池。
     最终带“当日种子”轮换（当天稳定，次日变化）。
     """
-    excl_sql, excl_params = _adult_exclude_sql()
+    excl_sql, excl_params = _adult_exclude_sql("v")
     with get_db() as db:
         rows = db.execute(
             f"""SELECT v.* FROM recommend_pool p
@@ -737,16 +740,15 @@ def get_related(video_id: int, limit: int = 8) -> list[dict]:
 def get_watch_history(limit: int = 20, adult: bool = False) -> list[dict]:
     """获取观看历史 — 每个视频只返回最新一条记录。
     adult=False（默认）排除成人内容；adult=True 只返回成人内容（供成人页单独展示）。"""
-    from app.adult import known_source_names
-    names = known_source_names()
-    cond_sql = ""
-    params = []
-    if names:
+    from app.adult import adult_cond_sql
+    cond, params = adult_cond_sql("v")
+    if cond:
         if adult:
-            cond_sql = f" AND v.source IN ({','.join('?' * len(names))})"
+            cond_sql = f" AND {cond}"
         else:
-            cond_sql = f" AND v.source NOT IN ({','.join('?' * len(names))})"
-        params = list(names)
+            cond_sql = f" AND NOT {cond}"
+    else:
+        cond_sql = ""
     with get_db() as db:
         rows = db.execute(
             f"""
@@ -795,6 +797,34 @@ def save_watch_history(video_id: int, episode_id: int | None,
                    VALUES (?, ?, ?, ?)""",
                 (video_id, episode_id, progress, total)
             )
+
+
+def delete_adult_history() -> int:
+    """删除观看历史中的成人内容记录（按来源+标题关键词判定），删除前备份。
+    返回删除条数。"""
+    from app.adult import adult_cond_sql
+    cond, params = adult_cond_sql("v")
+    if not cond:
+        return 0
+    with get_db() as db:
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS watch_history_adult_backup "
+            "AS SELECT * FROM watch_history WHERE 1=0"
+        )
+        rows = db.execute(
+            f"SELECT h.id FROM watch_history h JOIN videos v ON v.id = h.video_id WHERE {cond}",
+            params
+        ).fetchall()
+        ids = [r["id"] for r in rows]
+        if ids:
+            ph = ",".join("?" * len(ids))
+            db.execute(
+                f"INSERT INTO watch_history_adult_backup SELECT * FROM watch_history WHERE id IN ({ph})",
+                ids
+            )
+            db.execute(f"DELETE FROM watch_history WHERE id IN ({ph})", ids)
+        logger.info(f"清理成人观看历史: 删除 {len(ids)} 条（已备份）")
+        return len(ids)
 
 
 def upsert_video(video: dict) -> int:

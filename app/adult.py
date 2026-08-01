@@ -31,6 +31,24 @@ DEFAULT_SOURCES = [
         "base_url": "http://fhapi9.com",
         "category_map": {"movie": "1", "tv": "2", "variety": "3", "anime": "4"},
     },
+    {
+        "name": "艾旦蓝光",
+        "base_url": "https://lovedan.net",
+        "category_map": {"movie": "1", "tv": "2", "variety": "3", "anime": "4"},
+    },
+]
+
+# 普通源里混入的成人/情色内容标题关键词（用于全局隔离，避免误入首页/历史/搜索）
+ADULT_KEYWORDS = [
+    "女优", "性爱", "性交", "做爱", "自拍流出", "内射", "口交", "乳交", "巨乳",
+    "精液", "肉棒", "无码", "有码", "18禁", "色情", "情色", "AV女优", "AV无码",
+    "肉蒲团", "玉女心经", "极乐宝鉴", "艳谭", "艳史", "灯草和尚", "赤裸羔羊",
+    "玉蒲团", "剑奴", "欲女", "荡妇", "裸体", "全裸", "裸聊", "Nude",
+    "艳谈", "镜花风月", "一路向西", "魔鬼天使", "肮脏",
+    "福利姬", "援交", "包养", "陪睡", "黑料", "啪啪", "浪叫",
+    "操我", "操死", "狂操", "狂干", "干我", "猛干", "高潮",
+    "FUCK", "fuck", "SEX", "Sex", "Porn", "porn",
+    "梅洛迪", "希娜", "Meru", "Melody",
 ]
 
 
@@ -78,6 +96,35 @@ def known_source_names() -> list[str]:
         if n and n not in names:
             names.append(n)
     return names
+
+
+def adult_keywords() -> list[str]:
+    return list(ADULT_KEYWORDS)
+
+
+def is_adult_title(title: str) -> bool:
+    """按标题关键词判断是否成人/情色内容（覆盖普通源里混入的内容）"""
+    if not title:
+        return False
+    t = str(title)
+    return any(k in t for k in ADULT_KEYWORDS)
+
+
+def adult_cond_sql(column: str = "v") -> tuple[str, list]:
+    """生成“成人内容”判定 SQL：来源属于成人源 或 标题含成人关键词。
+    返回 (SQL片段, 参数)。column 用于限定表别名（如 v / videos）。"""
+    names = known_source_names()
+    parts = []
+    params = []
+    if names:
+        parts.append(f"{column}.source IN ({','.join('?' * len(names))})")
+        params.extend(names)
+    for kw in ADULT_KEYWORDS:
+        parts.append(f"{column}.title LIKE ?")
+        params.append(f"%{kw}%")
+    if not parts:
+        return "", []
+    return "(" + " OR ".join(parts) + ")", params
 
 
 _sync_state = {"running": False, "count": 0, "last_run": None, "error": None}

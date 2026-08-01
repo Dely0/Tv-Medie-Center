@@ -26,17 +26,6 @@
       }
     },
     {
-      "name": "艾旦蓝光",
-      "base_url": "https://lovedan.net",
-      "enabled": true,
-      "category_map": {
-        "movie": "1",
-        "tv": "2",
-        "variety": "3",
-        "anime": "4"
-      }
-    },
-    {
       "name": "量子资源",
       "base_url": "https://cj.lziapi.com",
       "enabled": true,

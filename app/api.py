@@ -116,8 +116,12 @@ def api_search(
     if not q.strip():
         return {"results": [], "total": 0, "page": page}
 
+    # 成人开关开启时搜索包含成人内容，关闭时始终排除
+    from app.adult import is_enabled
+    include_adult = is_enabled()
+
     # 1. 本地搜索（秒出）
-    local_results, _ = search_videos(q, 1, 9999)
+    local_results, _ = search_videos(q, 1, 9999, include_adult=include_adult)
     local_seen = {r["source_url"] for r in local_results}
 
     # 2. 并行远程搜索
@@ -165,7 +169,7 @@ def api_search(
         except Exception:
             pass
     # 4. 重新查本地（包含刚插入的远程结果，带真实 id）
-    local_results, total = search_videos(q, page, page_size)
+    local_results, total = search_videos(q, page, page_size, include_adult=include_adult)
     return {
         "results": local_results,
         "total": total,
@@ -439,6 +443,14 @@ def api_history(
 ):
     """观看历史（默认排除成人内容；adult=1 时只返回成人内容历史）"""
     return {"items": get_watch_history(limit, adult=adult)}
+
+
+@app.post("/api/history/clean-adult")
+def api_history_clean_adult():
+    """清理观看历史中的成人内容记录（删除前自动备份到 watch_history_adult_backup 表）"""
+    from app.database import delete_adult_history
+    n = delete_adult_history()
+    return {"success": True, "deleted": n}
 
 
 @app.post("/api/history")
