@@ -35,6 +35,7 @@ let _altIndex = -1;            // 当前备用源索引
 let _lines = [];               // 播放链候选线路（play-lines）
 let _lineIndex = -1;           // 当前线路下标
 let _linesLoaded = false;      // 本次播放会话是否已拉取播放链
+let _linesPromise = null;      // 播放链拉取中的 Promise（去重 + 供按钮等待）
 let _stallTimer = null;        // 卡顿自动换线定时器
 let _srcStatusAt = 0;          // 源状态最近刷新时间
 
@@ -688,6 +689,7 @@ async function openPlayerAndPlay(videoId, episode, startSeconds) {
   _lines = [];
   _lineIndex = -1;
   _linesLoaded = false;
+  _linesPromise = null;
   clearStallTimer();
   clearLoadTimer();
 
@@ -752,6 +754,7 @@ async function switchEpisode(dir) {
   _lines = [];
   _lineIndex = -1;
   _linesLoaded = false;
+  _linesPromise = null;
   clearStallTimer();
   // 同步请求全屏（保留按键手势激活），未在全屏时进入全屏
   const stage = document.getElementById("player-stage");
@@ -980,25 +983,32 @@ function linePlayUrl(line) {
 
 async function fetchPlayLines(videoId, episode) {
   if (_linesLoaded) return;
-  try {
-    const res = await fetch("/api/video/" + videoId + "/play-lines" +
-      (episode ? "?episode=" + episode : ""));
-    const data = await res.json();
-    _linesLoaded = true;
-    _lines = ((data && data.lines) || []).filter(l => l && l.play_url);
-    _lineIndex = -1;
-    for (let i = 0; i < _lines.length; i++) {
-      if (_lines[i].current || _lines[i].play_url === _currentUrl) { _lineIndex = i; break; }
-    }
-    updateLineButton();
-    // 播放链不足时，继续用旧的 best-source 后台补充（跨源搜索候选）
-    if (_lines.length <= 1 && !_altSources.length && !_playFailed) {
+  // 已有正在拉取的请求则复用，避免重复请求
+  if (_linesPromise) return _linesPromise;
+  _linesPromise = (async () => {
+    try {
+      const res = await fetch("/api/video/" + videoId + "/play-lines" +
+        (episode ? "?episode=" + episode : ""));
+      const data = await res.json();
+      _linesLoaded = true;
+      _lines = ((data && data.lines) || []).filter(l => l && l.play_url);
+      _lineIndex = -1;
+      for (let i = 0; i < _lines.length; i++) {
+        if (_lines[i].current || _lines[i].play_url === _currentUrl) { _lineIndex = i; break; }
+      }
+      updateLineButton();
+      // 播放链不足时，继续用旧的 best-source 后台补充（跨源搜索候选）
+      if (_lines.length <= 1 && !_altSources.length && !_playFailed) {
+        tryBestSource(videoId, episode, _currentUrl);
+      }
+    } catch (e) {
+      // 播放链获取失败时回退到旧的 best-source 兜底
       tryBestSource(videoId, episode, _currentUrl);
+    } finally {
+      _linesPromise = null;
     }
-  } catch (e) {
-    // 播放链获取失败时回退到旧的 best-source 兜底
-    tryBestSource(videoId, episode, _currentUrl);
-  }
+  })();
+  return _linesPromise;
 }
 
 function updateLineButton() {
@@ -1011,6 +1021,16 @@ function updateLineButton() {
 
 // 手动切换线路（播放条“线路”按钮）
 async function cycleLine() {
+  // 首次进入时播放链可能还在后台测速（最多 8-9 秒），先等它完成，避免误报“没有线路”
+  if (!_lines.length && _linesPromise) {
+    showBufferOSD("正在获取线路…");
+    try {
+      await Promise.race([
+        _linesPromise,
+        new Promise(r => setTimeout(r, 10000)),
+      ]);
+    } catch (e) {}
+  }
   if (!_lines.length) {
     showBufferOSD("暂无其他线路，正在查找备用源…");
     try {
@@ -1136,6 +1156,7 @@ function stopPlayerInternal(saveProgressNow) {
   _lines = [];
   _lineIndex = -1;
   _linesLoaded = false;
+  _linesPromise = null;
   clearStallTimer();
   if (_diagVisible) { _diagVisible = false; const p = document.getElementById("diag-panel"); if (p) p.classList.add("hidden"); }
   if (_diagTimer) { clearInterval(_diagTimer); _diagTimer = null; }
