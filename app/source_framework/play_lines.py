@@ -53,6 +53,16 @@ def _gather_candidates(video_id: int, episode: int | None, max_candidates: int):
     candidates = []
 
     cur_ep, cur_title = _pick_episode(eps, episode)
+    # 本地没存剧集时（如 drpy 回填只存了列表），实时从当前源解析
+    if not cur_ep and detail.get("source") and detail.get("source_url"):
+        try:
+            from app.source_framework.registry import get_source_by_name
+            src = get_source_by_name(detail.get("source", ""))
+            if src:
+                _, eps_remote = src.get_detail(detail.get("source_url", ""))
+                cur_ep, cur_title = _pick_episode(eps_remote, episode)
+        except Exception:
+            pass
     if cur_ep and cur_ep.get("play_url"):
         candidates.append({
             "video_id": detail["id"],
@@ -134,6 +144,8 @@ def _measure_candidates(candidates: list[dict], timeout: float) -> list[dict]:
 
 
 def _build_line(c: dict, profile: dict | None, m: dict) -> dict:
+    from app.source_framework.drpy_source import get_registry
+    is_drpy = get_registry().get_by_name(c["source"]) is not None
     return {
         "source": c["source"],
         "play_url": m.get("play_url") or c["play_url"],
@@ -145,7 +157,8 @@ def _build_line(c: dict, profile: dict | None, m: dict) -> dict:
         "max_bandwidth_kbps": m.get("max_bandwidth_kbps"),
         "error": m.get("error"),
         "headers": profile or {},
-        "use_proxy": needs_proxy(profile),
+        # drpy 源统一走本地代理（同源请求，规避浏览器 CORS/防盗链）
+        "use_proxy": needs_proxy(profile) or is_drpy,
     }
 
 
@@ -187,7 +200,6 @@ def _background_supplement(cache_key: str, video_id: int, title: str, norm: str,
             cached = _LINES_CACHE.get(cache_key)
         lines = list(cached[1]) if cached else []
         have = {l.get("source") for l in lines}
-        additions = []
 
         def find_match(src):
             try:
@@ -201,9 +213,11 @@ def _background_supplement(cache_key: str, video_id: int, title: str, norm: str,
                     break
             return (src, match) if match else None
 
+        # 阶段一：并行搜索全部源，收集匹配
         sources = get_search_sources()
         pool = ThreadPoolExecutor(max_workers=min(len(sources), 6))
         futures = [pool.submit(find_match, s) for s in sources]
+        matches = []
         try:
             for f in as_completed(futures, timeout=14):
                 try:
@@ -215,12 +229,34 @@ def _background_supplement(cache_key: str, video_id: int, title: str, norm: str,
                 src, match = r
                 if src.name in have or src.name == current_source:
                     continue
+                matches.append((src, match))
+                have.add(src.name)
+                if len(matches) >= 8:
+                    break
+        except Exception:
+            pass
+        finally:
+            pool.shutdown(wait=False)
+
+        if not matches:
+            return
+
+        # 阶段二：并行解析匹配项的剧集
+        additions = []
+        detail_pool = ThreadPoolExecutor(max_workers=min(len(matches), 6))
+        detail_futures = [detail_pool.submit(src.get_detail, match.get("source_url", ""))
+                          for src, match in matches]
+        try:
+            for f in as_completed(detail_futures, timeout=16):
                 try:
-                    _, eps2 = src.get_detail(match.get("source_url", ""))
+                    _, eps2 = f.result(timeout=1)
                 except Exception:
+                    continue
+                if not eps2:
                     continue
                 ep, ep_title = _pick_episode(eps2, episode)
                 if ep and ep.get("play_url"):
+                    src = matches[detail_futures.index(f)][0]
                     additions.append({
                         "video_id": None,
                         "source": src.name,
@@ -228,13 +264,10 @@ def _background_supplement(cache_key: str, video_id: int, title: str, norm: str,
                         "episode_title": ep_title,
                         "current": False,
                     })
-                    have.add(src.name)
-                    if len(additions) >= 8:
-                        break
         except Exception:
             pass
         finally:
-            pool.shutdown(wait=False)
+            detail_pool.shutdown(wait=False)
 
         if not additions:
             return

@@ -199,11 +199,9 @@ class DrpySource:
         return self._normalize_detail(items[0])
 
     def get_play_url(self, url_or_id: str) -> str | None:
-        vod_id = self._extract_id(url_or_id)
-        if vod_id:
-            _, episodes = self.get_detail(vod_id)
-            if episodes:
-                return episodes[0].get("play_url")
+        _, episodes = self.get_detail(url_or_id)
+        if episodes:
+            return episodes[0].get("play_url")
         if self._is_media_url(url_or_id):
             return url_or_id
         return url_or_id
@@ -218,6 +216,9 @@ class DrpySource:
                 return urllib.parse.unquote(m.group(1))
         if url_or_id.isdigit():
             return url_or_id
+        # 分类接口返回的 id 可能带线路后缀，如 575144@1
+        if re.match(r"^\d+(@\d+)?$", url_or_id):
+            return url_or_id
         m = re.search(r"/vod/(\d+)", url_or_id)
         if m:
             return m.group(1)
@@ -225,8 +226,13 @@ class DrpySource:
 
     @staticmethod
     def _is_media_url(url: str) -> bool:
-        from urllib.parse import urlparse
-        return urlparse(url).path.lower().endswith((".mp4", ".m3u8", ".flv", ".ts", ".mkv"))
+        if not isinstance(url, str) or not url.startswith(("http://", "https://")):
+            return False
+        try:
+            from urllib.parse import urlparse
+            return urlparse(url).path.lower().endswith((".mp4", ".m3u8", ".flv", ".ts", ".mkv"))
+        except Exception:
+            return False
 
     def _normalize_list(self, items: list) -> list[dict]:
         results = []

@@ -132,7 +132,7 @@ def api_search(
     if sources:
         wall_timeout = SEARCH_TIMEOUT + 3  # 给 fallback 留余量
         deadline = time.time() + wall_timeout + 2
-        pool = concurrent.futures.ThreadPoolExecutor(max_workers=min(len(sources), 4))
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=min(len(sources), 8))
         futures = {pool.submit(src.search, q, SEARCH_TIMEOUT): src for src in sources}
         try:
             for f in concurrent.futures.as_completed(futures, timeout=wall_timeout):
@@ -245,8 +245,13 @@ _MEDIA_EXTS = (".mp4", ".m3u8", ".flv", ".ts", ".mkv")
 
 def _is_media_url(url: str) -> bool:
     """判断是否为可直接播放的媒体地址（忽略查询参数）"""
-    from urllib.parse import urlparse
-    return urlparse(url).path.lower().endswith(_MEDIA_EXTS)
+    if not isinstance(url, str) or not url.startswith(("http://", "https://")):
+        return False
+    try:
+        from urllib.parse import urlparse
+        return urlparse(url).path.lower().endswith(_MEDIA_EXTS)
+    except Exception:
+        return False
 
 
 @app.post("/api/video/{video_id}/play")
@@ -285,18 +290,27 @@ def api_play(
             except Exception:
                 continue
             # 源解析失败时会把原 URL 原样返回，必须排除详情页地址
-            if resolved and (resolved != detail["source_url"] or _is_media_url(resolved)):
-                play_url = resolved
-                break
+            try:
+                if resolved and (resolved != detail["source_url"] or _is_media_url(resolved)):
+                    play_url = resolved
+                    break
+            except Exception:
+                continue
     if not play_url:
         raise HTTPException(500, "无法获取播放地址")
 
     # 提供 Referer 供前端源站测速使用
     referer = ""
+    use_proxy = False
     for s in get_maccms_manager().get_all():
         if s.name == detail.get("source", ""):
             referer = s.base_url + "/"
             break
+    if not referer:
+        from app.source_framework.drpy_source import get_registry
+        if get_registry().get_by_name(detail.get("source", "")):
+            # drpy 源走本地代理，避免浏览器 CORS/防盗链导致卡顿
+            use_proxy = True
 
     return {
         "success": True,
@@ -305,6 +319,7 @@ def api_play(
         "play_url": play_url,
         "source": detail.get("source", ""),
         "referer": referer,
+        "use_proxy": use_proxy,
         "start_seconds": start_seconds,
     }
 

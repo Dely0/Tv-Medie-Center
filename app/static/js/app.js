@@ -38,6 +38,7 @@ let _linesLoaded = false;      // 本次播放会话是否已拉取播放链
 let _linesPromise = null;      // 播放链拉取中的 Promise（去重 + 供按钮等待）
 let _linesRefreshTimer = null; // 播放链延迟刷新定时器（等待后台跨源补充）
 let _autoLineSwitched = false; // 本次播放会话是否已自动切到更快线路
+let _linesRetried = false;     // 是否已做过第二次延迟刷新
 let _stallTimer = null;        // 卡顿自动换线定时器
 let _srcStatusAt = 0;          // 源状态最近刷新时间
 
@@ -694,6 +695,7 @@ async function openPlayerAndPlay(videoId, episode, startSeconds) {
   _linesLoaded = false;
   _linesPromise = null;
   _autoLineSwitched = false;
+  _linesRetried = false;
   clearLineRefreshTimer();
   clearStallTimer();
   clearLoadTimer();
@@ -761,6 +763,7 @@ async function switchEpisode(dir) {
   _linesLoaded = false;
   _linesPromise = null;
   _autoLineSwitched = false;
+  _linesRetried = false;
   clearLineRefreshTimer();
   clearStallTimer();
   // 同步请求全屏（保留按键手势激活），未在全屏时进入全屏
@@ -802,6 +805,14 @@ async function loadAndPlayUrl(videoId, episode, overrideUrl, overrideSource) {
     }
     _playFailed = false;
 
+    // drpy 源统一走本地代理（同源请求，规避浏览器 CORS/防盗链导致的卡顿/失败）
+    if (data.use_proxy && data.play_url && !overrideUrl) {
+      const ref = data.referer ? "&ref=" + encodeURIComponent(data.referer) : "";
+      const isM3u8 = data.play_url.toLowerCase().indexOf(".m3u8") > 0;
+      data.play_url = (isM3u8 ? "/api/hls-proxy?url=" : "/api/media-proxy?url=")
+        + encodeURIComponent(data.play_url) + ref;
+    }
+
     document.getElementById("player-title").textContent = data.episode_title || (episode ? "第" + episode + "集" : "");
     _currentUrl = data.play_url || "";
     _currentSourceName = data.source || "";
@@ -823,11 +834,16 @@ async function loadAndPlayUrl(videoId, episode, overrideUrl, overrideSource) {
     // Load new source
     if (typeof Hls !== "undefined" && Hls.isSupported() && data.play_url.indexOf(".m3u8") > 0) {
       const hls = new Hls({
-        maxBufferLength: 60,
+        maxBufferLength: 90,
         maxMaxBufferLength: 300,
         backBufferLength: 30,
         enableWorker: true,
         startLevel: 0,
+        abrEwmaDefaultEstimate: 500000,
+        abrEwmaFastVoD: 3,
+        abrEwmaSlowVoD: 8,
+        maxStarvationDelay: 6,
+        maxLoadingDelay: 6,
       });
       _hlsInstance = hls;
       hls.loadSource(data.play_url);
@@ -1029,6 +1045,13 @@ async function fetchPlayLines(videoId, episode, forceRefresh) {
           _linesRefreshTimer = null;
           fetchPlayLines(videoId, episode, true);
         }, 14000);
+      } else if (!_linesRetried && _lines.length <= 3) {
+        // 跨源补充可能超过 14 秒，20 秒后再试一次
+        _linesRetried = true;
+        _linesRefreshTimer = setTimeout(() => {
+          _linesRefreshTimer = null;
+          fetchPlayLines(videoId, episode, true);
+        }, 20000);
       }
     } catch (e) {
       // 播放链获取失败时回退到旧的 best-source 兜底
@@ -1201,6 +1224,7 @@ function stopPlayerInternal(saveProgressNow) {
   _linesLoaded = false;
   _linesPromise = null;
   _autoLineSwitched = false;
+  _linesRetried = false;
   clearLineRefreshTimer();
   clearStallTimer();
   if (_diagVisible) { _diagVisible = false; const p = document.getElementById("diag-panel"); if (p) p.classList.add("hidden"); }
