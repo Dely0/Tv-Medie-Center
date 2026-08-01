@@ -703,6 +703,7 @@ async function loadAndPlayUrl(videoId, episode, overrideUrl, overrideSource) {
         episode_title: episode ? "第" + episode + "集" : "",
       };
     } else {
+      // 先播当前源（秒开），后台多源测速优选，慢源自动切换
       const res = await fetch(url, { method: "POST" });
       data = await res.json();
     }
@@ -803,10 +804,42 @@ async function loadAndPlayUrl(videoId, episode, overrideUrl, overrideSource) {
     startLoadTimer(video);
     // 异步源站测速（拉清单+首分片），不阻塞播放
     probeSource(data.play_url, data.referer || "");
+    // 多源测速优选：后台查找更快/码率更高的源，慢源自动切换
+    if (!overrideUrl) tryBestSource(videoId, episode, data.play_url);
   } catch (e) {
     _playFailed = true;
     showBufferOSD("网络请求失败，按 Enter 重试");
   }
+}
+
+// 多源测速优选：不阻塞播放，发现明显更快的线路时自动切换
+async function tryBestSource(videoId, episode, currentUrl) {
+  try {
+    const ac = new AbortController();
+    const tm = setTimeout(() => ac.abort(), 12000);
+    const bs = await fetch("/api/video/" + videoId + "/best-source" +
+      (episode ? "?episode=" + episode : ""), { signal: ac.signal }).then(r => r.json());
+    clearTimeout(tm);
+    if (!bs || !bs.best || bs.best.error || !bs.best.play_url) return;
+    // 备用源按测速排序，播放失败时依次切换
+    _altSources = (bs.alternatives || [])
+      .filter(a => a.play_url && a.play_url !== bs.best.play_url && !a.error)
+      .map(a => ({ source: a.source, play_url: a.play_url }));
+    _altIndex = -1;
+    // 最优源就是当前源时不切换
+    if (bs.best.play_url === currentUrl) return;
+    if (bs.best.source === _currentSourceName) return;
+    const video = document.getElementById("tv-video");
+    const buffering = _bufferSince > 0 || !video || video.readyState < 2;
+    const curSpeed = _lastSpeed;
+    const better = (bs.best.speed_kbs || 0) > 120 &&
+      (!curSpeed || (bs.best.speed_kbs > curSpeed * 1.5));
+    if (buffering || better) {
+      _hlsRetryCount = 0;
+      showBufferOSD("已切换到更快线路 " + (bs.best.source || ""));
+      await loadAndPlayUrl(videoId, episode, bs.best.play_url, bs.best.source);
+    }
+  } catch (e) {}
 }
 
 // 播放失败时自动查找并切换到备用源

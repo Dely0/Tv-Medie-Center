@@ -372,6 +372,17 @@ def api_video_alternates(
     return {"alternates": alternates[:4]}
 
 
+@app.get("/api/video/{video_id}/best-source")
+def api_video_best_source(
+    video_id: int,
+    episode: int = Query(default=None, description="剧集编号"),
+):
+    """多源测速优选：找出同一视频在各源中速度最快、码率最高的播放地址。
+    CDN 测速结果缓存 10 分钟。"""
+    from app.source_selector import find_best_source
+    return find_best_source(video_id, episode)
+
+
 @app.get("/api/probe")
 def api_probe(
     url: str = Query(default="", description="播放地址"),
