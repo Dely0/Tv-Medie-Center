@@ -37,6 +37,7 @@ let _lineIndex = -1;           // 当前线路下标
 let _linesLoaded = false;      // 本次播放会话是否已拉取播放链
 let _linesPromise = null;      // 播放链拉取中的 Promise（去重 + 供按钮等待）
 let _linesRefreshTimer = null; // 播放链延迟刷新定时器（等待后台跨源补充）
+let _autoLineSwitched = false; // 本次播放会话是否已自动切到更快线路
 let _stallTimer = null;        // 卡顿自动换线定时器
 let _srcStatusAt = 0;          // 源状态最近刷新时间
 
@@ -692,6 +693,7 @@ async function openPlayerAndPlay(videoId, episode, startSeconds) {
   _lineIndex = -1;
   _linesLoaded = false;
   _linesPromise = null;
+  _autoLineSwitched = false;
   clearLineRefreshTimer();
   clearStallTimer();
   clearLoadTimer();
@@ -758,6 +760,7 @@ async function switchEpisode(dir) {
   _lineIndex = -1;
   _linesLoaded = false;
   _linesPromise = null;
+  _autoLineSwitched = false;
   clearLineRefreshTimer();
   clearStallTimer();
   // 同步请求全屏（保留按键手势激活），未在全屏时进入全屏
@@ -1006,12 +1009,26 @@ async function fetchPlayLines(videoId, episode, forceRefresh) {
       if (_lines.length <= 1 && !_altSources.length && !_playFailed) {
         tryBestSource(videoId, episode, _currentUrl);
       }
+      // 当前源明显更慢时，自动切到播放链里最快的线路（每会话只自动切一次）
+      if (!_autoLineSwitched && _lines.length > 1 && !_playFailed) {
+        const best = _lines.find(l => l && l.speed_kbs && !l.error);
+        if (best && best.play_url && best.play_url !== _currentUrl) {
+          const curSpeed = _lastSpeed;
+          const better = best.speed_kbs > 150 && (!curSpeed || best.speed_kbs > curSpeed * 1.5);
+          if (better) {
+            _autoLineSwitched = true;
+            showBufferOSD("已自动切换到更快线路 " + (best.source || ""));
+            loadAndPlayUrl(videoId, episode, linePlayUrl(best), best.source);
+            return;
+          }
+        }
+      }
       // 后台跨源补充需要几秒，稍后再拉一次让新线路进入列表
-      if (!forceRefresh && _lines.length <= 3) {
+      if (!forceRefresh) {
         _linesRefreshTimer = setTimeout(() => {
           _linesRefreshTimer = null;
           fetchPlayLines(videoId, episode, true);
-        }, 8000);
+        }, 14000);
       }
     } catch (e) {
       // 播放链获取失败时回退到旧的 best-source 兜底
@@ -1183,6 +1200,7 @@ function stopPlayerInternal(saveProgressNow) {
   _lineIndex = -1;
   _linesLoaded = false;
   _linesPromise = null;
+  _autoLineSwitched = false;
   clearLineRefreshTimer();
   clearStallTimer();
   if (_diagVisible) { _diagVisible = false; const p = document.getElementById("diag-panel"); if (p) p.classList.add("hidden"); }

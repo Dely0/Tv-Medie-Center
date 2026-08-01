@@ -181,42 +181,60 @@ def _background_supplement(cache_key: str, video_id: int, title: str, norm: str,
     """后台跨源补充：在所有启用源（含 drpy）中搜索同标题视频并解析剧集，
     把新线路测速后合并进播放链缓存。"""
     from app.source_framework.registry import get_search_sources
+    from concurrent.futures import ThreadPoolExecutor, as_completed
     try:
         with _LINES_LOCK:
             cached = _LINES_CACHE.get(cache_key)
         lines = list(cached[1]) if cached else []
         have = {l.get("source") for l in lines}
         additions = []
-        for src in get_search_sources():
-            if len(lines) + len(additions) >= cfg.PLAY_LINES_LIMIT:
-                break
-            if src.name in have or src.name == current_source:
-                continue
+
+        def find_match(src):
             try:
                 items = src.search(title, timeout=6)
             except Exception:
-                continue
+                return None
             match = None
             for it in items:
                 if normalize_title(it.get("title") or "") == norm:
                     match = it
                     break
-            if not match:
-                continue
-            try:
-                _, eps2 = src.get_detail(match.get("source_url", ""))
-            except Exception:
-                continue
-            ep, ep_title = _pick_episode(eps2, episode)
-            if ep and ep.get("play_url"):
-                additions.append({
-                    "video_id": None,
-                    "source": src.name,
-                    "play_url": ep["play_url"],
-                    "episode_title": ep_title,
-                    "current": False,
-                })
-                have.add(src.name)
+            return (src, match) if match else None
+
+        sources = get_search_sources()
+        pool = ThreadPoolExecutor(max_workers=min(len(sources), 6))
+        futures = [pool.submit(find_match, s) for s in sources]
+        try:
+            for f in as_completed(futures, timeout=14):
+                try:
+                    r = f.result(timeout=1)
+                except Exception:
+                    continue
+                if not r:
+                    continue
+                src, match = r
+                if src.name in have or src.name == current_source:
+                    continue
+                try:
+                    _, eps2 = src.get_detail(match.get("source_url", ""))
+                except Exception:
+                    continue
+                ep, ep_title = _pick_episode(eps2, episode)
+                if ep and ep.get("play_url"):
+                    additions.append({
+                        "video_id": None,
+                        "source": src.name,
+                        "play_url": ep["play_url"],
+                        "episode_title": ep_title,
+                        "current": False,
+                    })
+                    have.add(src.name)
+                    if len(additions) >= 8:
+                        break
+        except Exception:
+            pass
+        finally:
+            pool.shutdown(wait=False)
 
         if not additions:
             return
@@ -230,7 +248,7 @@ def _background_supplement(cache_key: str, video_id: int, title: str, norm: str,
                     lines.append(m)
                     existing_urls.add(m["play_url"])
             lines.sort(key=lambda x: (-(x.get("speed_kbs") or -1), 0 if x.get("current") else 1))
-            _LINES_CACHE[cache_key] = (time.time(), lines)
+            _LINES_CACHE[cache_key] = (time.time(), lines[:12])
         logger.info(f"播放链后台补充: {cache_key} 新增 {len(measured)} 条线路")
     except Exception as e:
         logger.debug(f"播放链后台补充失败: {e}")
@@ -253,8 +271,8 @@ def get_play_lines(video_id: int, episode: int | None = None, refresh: bool = Fa
     with _LINES_LOCK:
         _LINES_CACHE[cache_key] = (time.time(), lines)
 
-    # 线路不足时，后台跨全部源搜索补充（含 drpy 新源），不阻塞本次返回
-    if len(lines) < cfg.PLAY_LINES_LIMIT and cache_key not in _SUPPLEMENTING:
+    # 无论本地候选多少，都后台跨全部源搜索补充（含 drpy 新源），不阻塞本次返回
+    if cache_key not in _SUPPLEMENTING:
         _SUPPLEMENTING.add(cache_key)
         detail = get_video_detail(video_id)
         title = (detail or {}).get("title", "")

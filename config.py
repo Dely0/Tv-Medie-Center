@@ -53,7 +53,7 @@ TVBOX_SYNC_INTERVAL = 24 * 3600  # 订阅同步周期（秒）
 PARSE_SOURCES_FILE = os.path.join(DATA_DIR, "parse_sources.json")
 
 # 播放链（play-lines）
-PLAY_LINES_LIMIT = 6          # 最多返回多少条候选线路
+PLAY_LINES_LIMIT = 10         # 最多返回多少条候选线路
 PLAY_LINES_MEASURE_TIMEOUT = 8  # 播放链测速总超时（秒）
 
 # 本地代理
