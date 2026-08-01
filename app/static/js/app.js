@@ -565,7 +565,7 @@ async function refreshSourceStatus() {
     const states = {};
     (st.sources || []).forEach(s => { states[s.name] = s; });
     const lines = (srcs.sources || [])
-      .filter(s => s.type === "maccms")
+      .filter(s => s.type === "maccms" || s.type === "drpy")
       .map(s => {
         const h = states[s.name] || {};
         const stTxt = h.state === "dead" ? "已隔离" : (h.state === "slow" ? "慢" : (h.state === "ok" ? "正常" : "未测"));
