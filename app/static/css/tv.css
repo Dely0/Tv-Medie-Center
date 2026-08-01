@@ -279,8 +279,8 @@ html, body {
 .video-card:focus-visible {
   outline: none;
   border-color: var(--border-focus);
-  transform: scale(1.04);
-  box-shadow: 0 8px 30px rgba(230,185,30,0.25);
+  transform: scale(1.05);
+  box-shadow: 0 0 0 3px rgba(255,255,255,0.3), 0 10px 34px rgba(230,185,30,0.35);
 }
 .video-card:hover {
   transform: scale(1.03);
@@ -575,6 +575,8 @@ html, body {
 }
 .player-nav-btn:focus-visible {
   border-color: #e6b91e; outline: none;
+  box-shadow: 0 0 0 3px rgba(255,255,255,0.35);
+  transform: scale(1.06);
 }
 .player-nav-btn:disabled {
   opacity: 0.3; cursor: default;
@@ -691,6 +693,13 @@ html, body {
 .browse-tab:focus-visible {
   outline: none;
   border-color: var(--border-focus);
+  background: rgba(255,255,255,0.14);
+  transform: scale(1.06);
+  box-shadow: 0 0 0 3px rgba(255,255,255,0.35);
+}
+.browse-tab.active:focus-visible {
+  background: rgba(230,185,30,0.28);
+  box-shadow: 0 0 0 3px rgba(255,255,255,0.45), 0 0 16px rgba(230,185,30,0.45);
 }
 .browse-tab-count {
   margin-left: 6px;
@@ -712,4 +721,10 @@ html, body {
 .continue-watch:focus-visible {
   outline: 2px solid var(--border-focus);
   outline-offset: 3px;
+}
+
+/* ─── 全局焦点兜底：遥控器方向键移动时必须有明显可见的焦点框 ─── */
+:focus-visible {
+  outline: 3px solid rgba(255,255,255,0.85);
+  outline-offset: 2px;
 }

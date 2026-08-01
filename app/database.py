@@ -333,12 +333,14 @@ def _area_sql(key: str) -> str:
 
 
 def _year_group(year) -> str | None:
-    """年份 → 筛选项；具体年份只保留 >=2017，其余归入年代分组"""
+    """年份 → 筛选项；具体年份只保留 2017~今年，未来脏数据忽略，其余归入年代分组"""
     try:
         y = int(year)
     except (TypeError, ValueError):
         return None
-    if y >= 2017:
+    import datetime
+    current_year = datetime.date.today().year
+    if 2017 <= y <= current_year:
         return str(y)
     if y >= 2000:
         return "2000年代"

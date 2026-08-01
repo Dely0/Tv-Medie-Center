@@ -8,6 +8,7 @@ let _searchTimer = null;
 let _searchFocused = false;
 let _searchResultsActive = false; // 搜索结果浏览模式
 let _browsePage = 1;
+let _browseReqSeq = 0;   // 浏览请求序号：丢弃过期响应，防止快速切筛选被旧结果覆盖
 let _searchPage = 1;
 let _hlsInstance = null;
 let _playerTimer = null;
@@ -202,6 +203,7 @@ async function loadBrowse(type) {
 }
 
 async function loadBrowsePage(direction) {
+  const seq = ++_browseReqSeq;
   if (direction === "next") _browsePage++;
   else if (direction === "prev" && _browsePage > 1) _browsePage--;
   const el = document.getElementById("browse-content");
@@ -210,6 +212,7 @@ async function loadBrowsePage(direction) {
       "&genre=" + encodeURIComponent(_currentGenre) +
       "&area=" + encodeURIComponent(_currentArea) +
       "&year=" + encodeURIComponent(_currentYear));
+    if (seq !== _browseReqSeq) return; // 已有更新的请求，丢弃本次结果
     let tags = [], areas = [], years = [];
     try {
       const gd = await F("/api/genres?type=" + _currentType);
@@ -217,15 +220,24 @@ async function loadBrowsePage(direction) {
       areas = gd.areas || [];
       years = gd.years || [];
     } catch (e) {}
+    if (seq !== _browseReqSeq) return;
 
     let html =
       renderFilterGroup("标签", tags, _currentGenre, "tag") +
       renderFilterGroup("地区", areas, _currentArea, "area") +
       renderFilterGroup("年份", years, _currentYear, "year");
 
+    // 先绑定筛选 Tab 点击（即使结果为空也要能切换筛选）
+    const bindTabs = () => {
+      document.querySelectorAll("#browse-content .browse-tab").forEach(tab => {
+        tab.onclick = () => selectFilter(tab.getAttribute("data-kind"), tab.getAttribute("data-value") || "");
+      });
+    };
+
     if (!data.results || !data.results.length) {
       if (direction === "next") _browsePage--;
       el.innerHTML = html + '<div class="empty-view">暂无内容</div>';
+      bindTabs(); // 结果为空时也要能切换筛选
       return;
     }
     html += '<div class="card-grid">';
@@ -237,9 +249,7 @@ async function loadBrowsePage(direction) {
       (data.results.length >= 30 ? '<button class="nav-btn browse-next" onclick="loadBrowsePage(\'next\')">下一页 ▶</button>' : '') +
       '</div>';
     el.innerHTML = html;
-    document.querySelectorAll("#browse-content .browse-tab").forEach(tab => {
-      tab.onclick = () => selectFilter(tab.getAttribute("data-kind"), tab.getAttribute("data-value") || "");
-    });
+    bindTabs();
     autoFocusView();
   } catch (e) {
     el.innerHTML = '<div class="error-view">加载失败</div>';
@@ -336,8 +346,20 @@ function formatSpeed(bps) {
   return bps.toFixed(0) + " B/s";
 }
 
+// 实时网速：优先分片统计，缺失时用 hls.js 内置带宽估算（bit/s → B/s）
+function currentSpeed() {
+  if (_lastSpeed > 0) return _lastSpeed;
+  try {
+    if (_hlsInstance && typeof _hlsInstance.bandwidthEstimate === "number" && _hlsInstance.bandwidthEstimate > 0) {
+      return _hlsInstance.bandwidthEstimate / 8;
+    }
+  } catch (e) {}
+  return 0;
+}
+
 function osdSpeedText() {
-  if (_lastSpeed > 0) return formatSpeed(_lastSpeed);
+  const sp = currentSpeed();
+  if (sp > 0) return formatSpeed(sp);
   if (_probeInfo) {
     const parts = [];
     if (_probeInfo.speed_mbs && _probeInfo.speed_mbs > 0) {
@@ -462,7 +484,7 @@ function updateDiagPanel() {
   let host = "—";
   try { host = new URL(_currentUrl).host; } catch (e) {}
   document.getElementById("diag-host").textContent = host;
-  document.getElementById("diag-speed").textContent = formatSpeed(_lastSpeed);
+  document.getElementById("diag-speed").textContent = formatSpeed(currentSpeed());
   let probeText = "—";
   if (_probeInfo) {
     const parts = [];
@@ -1245,9 +1267,10 @@ function moveFocus(dir) {
   }
 }
 
-/* -- 遥控器设置键 (鼠标右键) → 呼出搜索 -- */
+/* -- 遥控器设置键 (鼠标右键) → 呼出搜索（播放中不呼出，避免覆盖播放器按钮） -- */
 window.addEventListener("contextmenu", function(e) {
   e.preventDefault();
+  if (_currentView === "player") return;
   showSearch();
 });
 
