@@ -279,12 +279,13 @@ def get_videos_by_type(type_: str, page: int = 1, page_size: int = 30,
                 params_all + [page_size, offset]
             ).fetchall()
         elif type_ == "adult":
-            from app.adult import source_names
-            names = source_names()
-            if not names:
+            from app.adult import adult_cond_sql
+            cond, cond_params = adult_cond_sql("videos")
+            if not cond:
                 return [], 0
-            conds_all = [f"source IN ({','.join('?' * len(names))})"] + conds
-            params_all = list(names) + params
+            # 成人页 = 全量成人源内容 + 所有普通源中标题命中成人关键词的内容
+            conds_all = [cond] + conds
+            params_all = list(cond_params) + params
             where = " WHERE " + " AND ".join(conds_all)
             count_row = db.execute(f"SELECT COUNT(*) FROM videos{where}", params_all).fetchone()
             total = count_row[0] if count_row else 0
