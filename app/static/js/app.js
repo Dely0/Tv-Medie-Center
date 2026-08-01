@@ -1089,8 +1089,17 @@ function clearLineRefreshTimer() {
 function updateLineButton() {
   const btn = document.getElementById("btn-line");
   if (!btn) return;
-  btn.textContent = _lines.length > 1
-    ? "线路 " + Math.max(0, _lineIndex + 1) + "/" + _lines.length
+  // 只统计可用线路（无错误），不可用的线路不参与切换也不计入总数
+  const usable = _lines.filter(l => l && l.play_url && !l.error);
+  let idx = -1;
+  for (let i = 0; i < _lines.length; i++) {
+    if (_lines[i].current || _lines[i].play_url === _currentUrl) {
+      idx = usable.indexOf(_lines[i]);
+      break;
+    }
+  }
+  btn.textContent = usable.length > 1
+    ? "线路 " + Math.max(0, idx + 1) + "/" + usable.length
     : "线路";
 }
 

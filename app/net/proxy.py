@@ -72,6 +72,24 @@ def hls_proxy(url: str, ref: str = "", ua: str = "", origin: str = "", cookie: s
         def _rewrite(line: str) -> str:
             s = line.strip()
             if not s or s.startswith("#"):
+                # 加密 Key / 初始化段（EXT-X-MAP）的 URI 也要重写，否则相对路径会按代理地址解析而 404
+                if s.startswith("#EXT-X-KEY:") or s.startswith("#EXT-X-MAP:") or s.startswith("#EXT-X-SESSION-KEY:"):
+                    def _uri_repl(m):
+                        raw = m.group(1)
+                        try:
+                            abs_uri = urllib.parse.urljoin(url, raw)
+                        except Exception:
+                            return m.group(0)
+                        if not abs_uri.startswith(("http://", "https://")):
+                            return m.group(0)
+                        q = urllib.parse.urlencode({
+                            "url": abs_uri, "ref": ref, "ua": ua,
+                            "origin": origin, "cookie": cookie,
+                        })
+                        rel_start = m.start(1) - m.start(0)
+                        rel_end = m.end(1) - m.start(0)
+                        return m.group(0)[:rel_start] + "/api/hls-proxy?" + q + m.group(0)[rel_end:]
+                    return re.sub(r'URI="([^"]+)"', _uri_repl, line, flags=re.I)
                 return line
             try:
                 abs_url = urllib.parse.urljoin(url, s)

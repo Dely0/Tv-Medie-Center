@@ -152,20 +152,33 @@ def _measure_candidates(candidates: list[dict], timeout: float) -> list[dict]:
 def _build_line(c: dict, profile: dict | None, m: dict) -> dict:
     from app.source_framework.drpy_source import get_registry
     is_drpy = get_registry().get_by_name(c["source"]) is not None
+    url = m.get("play_url") or c["play_url"]
+    is_media = _is_media_url(url)
     return {
         "source": c["source"],
-        "play_url": m.get("play_url") or c["play_url"],
+        "play_url": url,
         "episode_title": c.get("episode_title", ""),
         "current": c.get("current", False),
-        "kind": "direct",
+        "kind": "direct" if is_media else "page",
         "speed_kbs": m.get("speed_kbs"),
         "ttfb_ms": m.get("ttfb_ms"),
         "max_bandwidth_kbps": m.get("max_bandwidth_kbps"),
-        "error": m.get("error"),
+        # HTML 播放页线路不能直接播，标记为待解析，切换时跳过
+        "error": m.get("error") if is_media else (m.get("error") or "播放页待解析"),
         "headers": profile or {},
         # drpy 源统一走本地代理（同源请求，规避浏览器 CORS/防盗链）
         "use_proxy": needs_proxy(profile) or is_drpy,
     }
+
+
+def _is_media_url(url: str) -> bool:
+    if not isinstance(url, str) or not url.startswith(("http://", "https://")):
+        return False
+    try:
+        from urllib.parse import urlparse
+        return urlparse(url).path.lower().endswith((".mp4", ".m3u8", ".flv", ".ts", ".mkv"))
+    except Exception:
+        return False
 
 
 def _background_resolve(cache_key: str, candidates: list[dict]):
@@ -187,6 +200,7 @@ def _background_resolve(cache_key: str, candidates: list[dict]):
             if resolved and resolved != url:
                 lines[i]["play_url"] = resolved
                 lines[i]["kind"] = "parse"
+                lines[i]["error"] = None
                 changed = True
         if changed:
             with _LINES_LOCK:
