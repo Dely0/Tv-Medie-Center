@@ -156,8 +156,9 @@ def match_in_local_db(norm_title: str) -> int | None:
     return None
 
 
-def search_and_upsert(title: str) -> int | None:
-    """源站搜索标题并入库，返回 video_id；找不到返回 None"""
+def search_and_upsert(title: str, limit_sources: int = 2) -> int | None:
+    """源站搜索标题并入库，返回 video_id；找不到返回 None。
+    limit_sources 限制搜索的源数量（按配置顺序取前 N 个快源），避免慢源拖长时间。"""
     if not title:
         return None
     from app.database import upsert_video
@@ -168,7 +169,7 @@ def search_and_upsert(title: str) -> int | None:
     sources = get_maccms_crawlable_sources()
     # 优先 360 资源（快源），再其他源
     sources = sorted(sources, key=lambda s: 0 if "360" in s.name else 1)
-    for src in sources:
+    for src in sources[:limit_sources]:
         try:
             items = src.search(title, timeout=6)
         except Exception:

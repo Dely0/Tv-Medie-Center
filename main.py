@@ -32,6 +32,13 @@ def _run_online_tasks():
     except Exception as e:
         logger.warning(f"豆瓣同步失败: {e}")
 
+    try:
+        from app.database import build_recommend_pool
+        n = build_recommend_pool()
+        logger.info(f"推荐池构建完成: {n} 条")
+    except Exception as e:
+        logger.warning(f"推荐池构建失败: {e}")
+
 
 def start_online_scheduler():
     """启动时立即执行一次，之后每 24 小时执行一次"""

@@ -567,6 +567,26 @@ class MaccmsSourceManager:
                 logger.info(f"从配置加载了 {len(self._sources)} 个 MacCMS 源")
         except Exception as e:
             logger.error(f"加载 MacCMS 配置失败: {e}")
+        # 附加成人源（开关开启时；关闭时 get_adult_sources 返回空）
+        try:
+            from app.adult import get_adult_sources
+            added = 0
+            for item in get_adult_sources():
+                if not item.get("name") or not item.get("base_url"):
+                    continue
+                if any(s.base_url == item["base_url"] for s in self._sources):
+                    continue
+                self._sources.append(MaccmsSource(
+                    name=item["name"],
+                    base_url=item["base_url"],
+                    category_map=item.get("category_map"),
+                    enabled=True,
+                ))
+                added += 1
+            if added:
+                logger.info(f"已附加 {added} 个成人源")
+        except Exception as e:
+            logger.warning(f"加载成人源失败: {e}")
 
     def add_source(self, source: MaccmsSource):
         """添加源"""

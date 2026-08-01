@@ -236,8 +236,17 @@ async function loadBrowsePage(direction) {
 
     if (!data.results || !data.results.length) {
       if (direction === "next") _browsePage--;
-      el.innerHTML = html + '<div class="empty-view">暂无内容</div>';
+      const hint = data.syncing
+        ? '<div class="empty-view">成人内容首次同步中（约 1~2 分钟），页面会自动刷新…</div>'
+        : '<div class="empty-view">暂无内容</div>';
+      el.innerHTML = html + hint;
       bindTabs(); // 结果为空时也要能切换筛选
+      if (data.syncing && _currentType === "adult" && _browsePage === 1) {
+        // 同步完成后自动刷新
+        setTimeout(() => {
+          if (_currentType === "adult" && _browsePage === 1) loadBrowsePage();
+        }, 20000);
+      }
       return;
     }
     html += '<div class="card-grid">';
@@ -1320,5 +1329,21 @@ navigateTo("home");
   try {
     const st = await F("/api/crawl/status");
     document.getElementById("status").textContent = st.progress || "";
+  } catch (e) {}
+  // 成人内容开关：开启时在导航末尾追加“成人”页面
+  try {
+    const cfg = await F("/api/config");
+    if (cfg && cfg.adult_enabled) {
+      const nav = document.getElementById("nav");
+      if (nav && !document.querySelector('#nav .nav-btn[data-type="adult"]')) {
+        const btn = document.createElement("button");
+        btn.className = "nav-btn";
+        btn.setAttribute("data-view", "browse");
+        btn.setAttribute("data-type", "adult");
+        btn.textContent = "🔞 成人";
+        btn.onclick = () => navigateTo("browse", "adult");
+        nav.appendChild(btn);
+      }
+    }
   } catch (e) {}
 })();

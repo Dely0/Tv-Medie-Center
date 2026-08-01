@@ -1,6 +1,7 @@
 """SQLite 数据库模块"""
 import sqlite3
 import json
+import logging
 import os
 import re
 import random
@@ -10,7 +11,18 @@ from collections import Counter
 from contextlib import contextmanager
 from config import DB_PATH
 
+logger = logging.getLogger("database")
+
 _local = threading.local()
+
+
+def _adult_exclude_sql() -> tuple[str, list]:
+    """返回排除成人源内容的 SQL 片段与参数（成人源未启用时为空，无性能损耗）"""
+    from app.adult import source_names
+    names = source_names()
+    if not names:
+        return "", []
+    return f" AND source NOT IN ({','.join('?' * len(names))})", list(names)
 
 
 def get_conn() -> sqlite3.Connection:
@@ -95,6 +107,14 @@ def init_db():
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
             );
 
+            -- 推荐池（后台任务构建：常看标签→豆瓣推荐→源站匹配，首页只读，保证加载速度）
+            CREATE TABLE IF NOT EXISTS recommend_pool (
+                video_id INTEGER PRIMARY KEY,
+                score REAL DEFAULT 0,
+                reason TEXT,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+
             -- 索引
             CREATE INDEX IF NOT EXISTS idx_videos_type ON videos(type);
             CREATE INDEX IF NOT EXISTS idx_videos_source ON videos(source);
@@ -103,6 +123,7 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_history_watched ON watch_history(watched_at DESC);
             CREATE INDEX IF NOT EXISTS idx_douban_ranks_video ON douban_ranks(video_id);
             CREATE INDEX IF NOT EXISTS idx_douban_ranks_cat ON douban_ranks(category, rank);
+            CREATE INDEX IF NOT EXISTS idx_recommend_pool_score ON recommend_pool(score DESC);
         """)
         _ensure_columns(db)
         _init_fts(db)
@@ -182,6 +203,7 @@ def search_videos(keyword: str, page: int = 1, page_size: int = 30) -> tuple[lis
     """搜索视频：trigram 支持中文子串；短词/特殊字符回退 LIKE"""
     offset = (page - 1) * page_size
     match_q = None
+    excl_sql, excl_params = _adult_exclude_sql()
     with get_db() as db:
         total = 0
         # trigram 至少需要 3 个字符，短词直接用 LIKE
@@ -190,8 +212,9 @@ def search_videos(keyword: str, page: int = 1, page_size: int = 30) -> tuple[lis
             match_q = '"' + keyword.replace('"', '""') + '"'
             try:
                 count_row = db.execute(
-                    "SELECT COUNT(*) FROM videos_fts WHERE videos_fts MATCH ?",
-                    (match_q,)
+                    "SELECT COUNT(*) FROM videos_fts fts JOIN videos v ON v.id = fts.rowid "
+                    f"WHERE fts MATCH ?{excl_sql}",
+                    (match_q,) + tuple(excl_params)
                 ).fetchone()
                 total = count_row[0] if count_row else 0
             except Exception:
@@ -199,26 +222,26 @@ def search_videos(keyword: str, page: int = 1, page_size: int = 30) -> tuple[lis
 
         if total > 0:
             rows = db.execute(
-                """
+                f"""
                 SELECT v.* FROM videos v, videos_fts fts
-                WHERE v.id = fts.rowid AND videos_fts MATCH ?
+                WHERE v.id = fts.rowid AND videos_fts MATCH ?{excl_sql}
                 ORDER BY v.updated_at DESC
                 LIMIT ? OFFSET ?
-                """, (match_q, page_size, offset)
+                """, (match_q,) + tuple(excl_params) + (page_size, offset)
             ).fetchall()
         else:
             # FTS 不匹配（短词/特殊字符场景），用 LIKE 保底
             like = f"%{keyword}%"
             count_row = db.execute(
-                "SELECT COUNT(*) FROM videos WHERE title LIKE ? OR description LIKE ? OR actors LIKE ? OR director LIKE ?",
-                (like, like, like, like)
+                f"SELECT COUNT(*) FROM videos WHERE (title LIKE ? OR description LIKE ? OR actors LIKE ? OR director LIKE ?){excl_sql}",
+                (like, like, like, like) + tuple(excl_params)
             ).fetchone()
             total = count_row[0] if count_row else 0
             rows = db.execute(
-                """SELECT * FROM videos
-                   WHERE title LIKE ? OR description LIKE ? OR actors LIKE ? OR director LIKE ?
+                f"""SELECT * FROM videos
+                   WHERE (title LIKE ? OR description LIKE ? OR actors LIKE ? OR director LIKE ?){excl_sql}
                    ORDER BY updated_at DESC LIMIT ? OFFSET ?""",
-                (like, like, like, like, page_size, offset)
+                (like, like, like, like) + tuple(excl_params) + (page_size, offset)
             ).fetchall()
 
     return [dict(r) for r in rows], total
@@ -226,7 +249,8 @@ def search_videos(keyword: str, page: int = 1, page_size: int = 30) -> tuple[lis
 
 def get_videos_by_type(type_: str, page: int = 1, page_size: int = 30,
                        genre: str = "", area: str = "", year: str = "") -> tuple[list[dict], int]:
-    """按类型分页查询；type_='recent' 时按更新时间不分类型；genre/area/year 非空时按维度过滤"""
+    """按类型分页查询；type_='recent' 按更新时间不分类型；type_='adult' 按成人源过滤；
+    genre/area/year 非空时按维度过滤"""
     offset = (page - 1) * page_size
     conds, params = [], []
     if genre:
@@ -238,16 +262,41 @@ def get_videos_by_type(type_: str, page: int = 1, page_size: int = 30,
         conds.append(_year_sql(year))
     with get_db() as db:
         if type_ == "recent":
-            where = (" WHERE " + " AND ".join(conds)) if conds else ""
-            count_row = db.execute(f"SELECT COUNT(*) FROM videos{where}", params).fetchone()
+            excl_sql, excl_params = _adult_exclude_sql()
+            where = (" WHERE " + " AND ".join(conds) + excl_sql) if (conds or excl_sql) else ""
+            params_all = params + excl_params
+            count_row = db.execute(f"SELECT COUNT(*) FROM videos{where}", params_all).fetchone()
             total = count_row[0] if count_row else 0
             rows = db.execute(
                 f"SELECT * FROM videos{where} ORDER BY updated_at DESC LIMIT ? OFFSET ?",
-                params + [page_size, offset]
+                params_all + [page_size, offset]
+            ).fetchall()
+        elif type_ == "adult":
+            from app.adult import source_names
+            names = source_names()
+            if not names:
+                return [], 0
+            conds_all = [f"source IN ({','.join('?' * len(names))})"] + conds
+            params_all = list(names) + params
+            where = " WHERE " + " AND ".join(conds_all)
+            count_row = db.execute(f"SELECT COUNT(*) FROM videos{where}", params_all).fetchone()
+            total = count_row[0] if count_row else 0
+            order_by = (
+                "ORDER BY "
+                "(EXISTS(SELECT 1 FROM douban_ranks r WHERE r.video_id = videos.id)) DESC, "
+                "COALESCE(NULLIF(douban_score,0), NULLIF(rating,0)) DESC, "
+                "updated_at DESC"
+            )
+            rows = db.execute(
+                f"SELECT * FROM videos{where} {order_by} LIMIT ? OFFSET ?",
+                params_all + [page_size, offset]
             ).fetchall()
         else:
             conds_all = ["type=?"] + conds
-            params_all = [type_] + params
+            excl_sql, excl_params = _adult_exclude_sql()
+            if excl_sql:
+                conds_all.append(excl_sql.lstrip(" AND "))
+            params_all = [type_] + params + excl_params
             where = " WHERE " + " AND ".join(conds_all)
             count_row = db.execute(f"SELECT COUNT(*) FROM videos{where}", params_all).fetchone()
             total = count_row[0] if count_row else 0
@@ -267,10 +316,12 @@ def get_videos_by_type(type_: str, page: int = 1, page_size: int = 30,
 def get_genres(type_: str) -> dict:
     """某分类下的筛选维度：tags(题材) / areas(地区) / years(年份)，各含数量"""
     result = {"tags": [], "areas": [], "years": []}
+    excl_sql, excl_params = _adult_exclude_sql()
     with get_db() as db:
         # 题材：拆分组合标签后统计
         rows = db.execute(
-            "SELECT genre FROM videos WHERE type=? AND genre != ''", (type_,)
+            f"SELECT genre FROM videos WHERE type=? AND genre != ''{excl_sql}",
+            (type_,) + tuple(excl_params)
         ).fetchall()
         tag_counter = Counter()
         for (g,) in rows:
@@ -285,7 +336,8 @@ def get_genres(type_: str) -> dict:
 
         # 地区：按归一化分组统计
         rows = db.execute(
-            "SELECT area FROM videos WHERE type=? AND area != ''", (type_,)
+            f"SELECT area FROM videos WHERE type=? AND area != ''{excl_sql}",
+            (type_,) + tuple(excl_params)
         ).fetchall()
         area_counter = Counter()
         for (a,) in rows:
@@ -300,7 +352,8 @@ def get_genres(type_: str) -> dict:
 
         # 年份：具体年份 + 年代分组
         rows = db.execute(
-            "SELECT year FROM videos WHERE type=? AND year IS NOT NULL", (type_,)
+            f"SELECT year FROM videos WHERE type=? AND year IS NOT NULL{excl_sql}",
+            (type_,) + tuple(excl_params)
         ).fetchall()
         year_counter = Counter()
         for (y,) in rows:
@@ -406,6 +459,7 @@ def get_video_detail(video_id: int) -> dict | None:
 
 def get_home_data() -> dict:
     """首页数据：Hero（继续观看/最近更新精选）+ 去重后的栏目"""
+    excl_sql, excl_params = _adult_exclude_sql()
     with get_db() as db:
         hero = _get_home_hero(db)
         seen = set()
@@ -424,40 +478,45 @@ def get_home_data() -> dict:
 
         reserved = {}
         reserved["score"] = take(db.execute(
-            """SELECT * FROM videos
-               WHERE douban_score > 0 OR rating > 0
+            f"""SELECT * FROM videos
+               WHERE (douban_score > 0 OR rating > 0){excl_sql}
                ORDER BY COALESCE(NULLIF(douban_score, 0), NULLIF(rating, 0)) DESC, updated_at DESC
-               LIMIT 40"""
+               LIMIT 40""",
+            excl_params
         ).fetchall())
         reserved["hot"] = take(db.execute(
-            """SELECT v.* FROM douban_ranks r
+            f"""SELECT v.* FROM douban_ranks r
                JOIN videos v ON v.id = r.video_id
+               WHERE 1=1{excl_sql}
                ORDER BY r.rank ASC, v.updated_at DESC
-               LIMIT 60"""
+               LIMIT 60""",
+            excl_params
         ).fetchall())
         if len(reserved["hot"]) < 20:
             # 豆瓣榜不足时用源站热度/站内观看/高分混合兜底
             reserved["hot"].extend(take(db.execute(
-                """SELECT v.*, COUNT(h.id) AS local_views
+                f"""SELECT v.*, COUNT(h.id) AS local_views
                    FROM videos v LEFT JOIN watch_history h ON h.video_id = v.id
-                   WHERE v.hits_week > 0 OR v.hits > 0 OR v.douban_score > 0 OR v.rating > 0
+                   WHERE (v.hits_week > 0 OR v.hits > 0 OR v.douban_score > 0 OR v.rating > 0){excl_sql}
                    GROUP BY v.id
                    ORDER BY
                      (COALESCE(v.hits_week,0)*100 + COALESCE(v.hits,0)*20 + COUNT(h.id)*250) DESC,
                      COALESCE(NULLIF(v.douban_score,0), NULLIF(v.rating,0)) DESC,
                      v.updated_at DESC
-                   LIMIT 60"""
+                   LIMIT 60""",
+                excl_params
             ).fetchall(), 20 - len(reserved["hot"])))
         reserved["recommend"] = take(get_recommendations(20))
         reserved["recent"] = take(db.execute(
-            "SELECT * FROM videos ORDER BY updated_at DESC LIMIT 40"
+            f"SELECT * FROM videos WHERE 1=1{excl_sql} ORDER BY updated_at DESC LIMIT 40",
+            excl_params
         ).fetchall())
         reserved["cats"] = {}
         label_map = {"movie": "电影", "tv": "电视剧", "variety": "综艺", "anime": "动漫"}
         for type_ in ["movie", "tv", "variety", "anime"]:
             reserved["cats"][type_] = take(db.execute(
-                "SELECT * FROM videos WHERE type=? ORDER BY updated_at DESC LIMIT 60",
-                (type_,)
+                f"SELECT * FROM videos WHERE type=?{excl_sql} ORDER BY updated_at DESC LIMIT 60",
+                (type_,) + tuple(excl_params)
             ).fetchall())
 
         sections = []
@@ -477,13 +536,16 @@ def get_home_data() -> dict:
 
 def _get_home_hero(db) -> dict | None:
     """最近观看记录（有进度）作为继续观看；否则取最近更新精选"""
+    excl_sql, excl_params = _adult_exclude_sql()
     row = db.execute(
-        """SELECT h.video_id, h.episode_id, h.progress_seconds, h.total_seconds,
+        f"""SELECT h.video_id, h.episode_id, h.progress_seconds, h.total_seconds,
                   v.title, v.cover, v.type
            FROM watch_history h
            JOIN videos v ON v.id = h.video_id
+           WHERE 1=1{excl_sql}
            ORDER BY h.watched_at DESC, h.id DESC
-           LIMIT 1"""
+           LIMIT 1""",
+        excl_params
     ).fetchone()
     if row and (row["progress_seconds"] or 0) > 0:
         episode_num = row["episode_id"]
@@ -507,7 +569,8 @@ def _get_home_hero(db) -> dict | None:
         }
 
     recent = db.execute(
-        "SELECT * FROM videos WHERE cover != '' ORDER BY updated_at DESC LIMIT 1"
+        f"SELECT * FROM videos WHERE cover != ''{excl_sql} ORDER BY updated_at DESC LIMIT 1",
+        excl_params
     ).fetchone()
     if recent:
         return {
@@ -532,32 +595,50 @@ def _split_names(text: str) -> list[str]:
 
 
 def get_recommendations(limit: int = 8) -> list[dict]:
-    """为你推荐：从用户常看的类型标签出发，结合豆瓣标签推荐与本地高分同标签影片。
+    """为你推荐：只读推荐池（后台每日构建），保证首页毫秒级返回。
 
-    - 有观看历史：取常看标签 → 豆瓣按标签推荐（匹配入库）+ 本地同标签高分未看
-    - 无观看历史：回退到豆瓣热播榜高分池
-    - 最终按 相似度+评分 排序，并带“当日种子”轮换，避免内容一成不变
+    推荐池由 build_recommend_pool() 在后台任务中构建：
+    常看标签 → 豆瓣标签推荐 → 源站匹配入库。无池时回退豆瓣热播高分池。
+    最终带“当日种子”轮换（当天稳定，次日变化）。
     """
+    excl_sql, excl_params = _adult_exclude_sql()
+    with get_db() as db:
+        rows = db.execute(
+            f"""SELECT v.* FROM recommend_pool p
+               JOIN videos v ON v.id = p.video_id
+               WHERE p.video_id NOT IN (SELECT video_id FROM watch_history){excl_sql}
+               ORDER BY p.score DESC, p.updated_at DESC
+               LIMIT 200""",
+            excl_params
+        ).fetchall()
+        items = [dict(r) for r in rows]
+        if not items:
+            rows = db.execute(
+                f"""SELECT v.* FROM douban_ranks r
+                   JOIN videos v ON v.id = r.video_id
+                   WHERE r.score > 0{excl_sql}
+                   ORDER BY r.score DESC, r.rank ASC
+                   LIMIT 150""",
+                excl_params
+            ).fetchall()
+            items = [dict(r) for r in rows]
+    return _seed_rank(items, limit)
+
+
+def build_recommend_pool(max_tags: int = 2, per_tag: int = 15) -> int:
+    """后台任务：按观看历史常看标签 → 豆瓣标签推荐 → 源站匹配入库 → 写推荐池。
+    返回池内视频数。网络耗时较长，应在后台线程/每日任务中调用。"""
     with get_db() as db:
         watched = db.execute(
-            """SELECT h.video_id, v.type, v.genre
+            """SELECT h.video_id, v.genre
                FROM watch_history h
                JOIN videos v ON v.id = h.video_id
                GROUP BY h.video_id
                ORDER BY MAX(h.watched_at) DESC, MAX(h.id) DESC
                LIMIT 10"""
         ).fetchall()
-
         if not watched:
-            rows = db.execute(
-                """SELECT v.* FROM douban_ranks r
-                   JOIN videos v ON v.id = r.video_id
-                   WHERE r.score > 0
-                   ORDER BY r.score DESC, r.rank ASC
-                   LIMIT 150"""
-            ).fetchall()
-            return _seed_rank([dict(r) for r in rows], limit)
-
+            return 0
         watched_ids = [r["video_id"] for r in watched]
         tag_counter = Counter()
         for r in watched:
@@ -565,58 +646,38 @@ def get_recommendations(limit: int = 8) -> list[dict]:
                 part = part.strip()
                 if part and len(part) >= 2 and part not in ("高清", "1080P", "4K", "蓝光", "超清", "完整版"):
                     tag_counter[part] += 1
-        top_tags = [t for t, _ in tag_counter.most_common(5)]
+        top_tags = [t for t, _ in tag_counter.most_common(max_tags)]
+        if not top_tags:
+            return 0
 
-        # 候选 1：本地同标签高分未看
-        local_items = []
-        if top_tags:
-            ph = ",".join("?" * len(watched_ids))
-            tag_conds = " OR ".join("genre LIKE ?" for _ in top_tags)
-            rows = db.execute(
-                f"SELECT * FROM videos WHERE id NOT IN ({ph}) AND ({tag_conds}) "
-                "ORDER BY COALESCE(NULLIF(douban_score,0), NULLIF(rating,0)) DESC, "
-                "(COALESCE(hits_week,0)*100 + COALESCE(hits,0)*20) DESC, updated_at DESC "
-                "LIMIT 120",
-                watched_ids + [f"%{t}%" for t in top_tags]
-            ).fetchall()
-            for r in rows:
-                d = dict(r)
-                d["_match"] = sum(1 for t in top_tags if t in (r["genre"] or ""))
-                d["_source"] = "local"
-                local_items.append(d)
+    from app.douban import fetch_tag_recommend, normalize_title
+    from app.douban import match_in_local_db, search_and_upsert
 
-        # 候选 2：豆瓣按标签推荐（只取前 2 个标签，控制请求量），匹配入库
-        douban_items = []
+    entries = {}
+    for tag in top_tags:
         try:
-            from app.douban import fetch_tag_recommend, normalize_title
-            from app.douban import match_in_local_db, search_and_upsert
-            for tag in top_tags[:2]:
-                for it in fetch_tag_recommend(tag, 15):
-                    vid = match_in_local_db(normalize_title(it["title"]))
-                    if vid is None:
-                        vid = search_and_upsert(it["title"])
-                    if vid and vid not in watched_ids:
-                        row = db.execute("SELECT * FROM videos WHERE id=?", (vid,)).fetchone()
-                        if row:
-                            d = dict(row)
-                            d["_match"] = 2.0  # 豆瓣标签推荐权重高于本地同标签
-                            d["_source"] = "douban"
-                            d["_douban_score"] = it["score"]
-                            douban_items.append(d)
+            items = fetch_tag_recommend(tag, per_tag)
         except Exception as e:
-            logger.warning(f"豆瓣标签推荐失败: {e}")
-
-        items = local_items + douban_items
-        if not items:
-            return []
-        seen_ids = set()
-        uniq = []
-        for d in items:
-            if d["id"] in seen_ids:
+            logger.warning(f"豆瓣标签推荐[{tag}]失败: {e}")
+            continue
+        for it in items:
+            try:
+                vid = match_in_local_db(normalize_title(it["title"]))
+                if vid is None:
+                    vid = search_and_upsert(it["title"])
+            except Exception:
                 continue
-            seen_ids.add(d["id"])
-            uniq.append(d)
-        return _seed_rank(uniq, limit)
+            if vid and vid not in watched_ids:
+                entries[vid] = max(entries.get(vid, 0), float(it["score"] or 0))
+
+    if not entries:
+        return 0
+    with get_db() as db:
+        db.execute("DELETE FROM recommend_pool")
+        for vid, score in entries.items():
+            db.execute("INSERT INTO recommend_pool (video_id, score) VALUES (?, ?)", (vid, score))
+    logger.info(f"推荐池构建完成: {len(entries)} 条")
+    return len(entries)
 
 
 def _seed_rank(items: list[dict], limit: int) -> list[dict]:

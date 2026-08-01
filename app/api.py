@@ -67,10 +67,24 @@ def api_browse(
     year: str = Query(default="", description="年份/年代筛选"),
 ):
     """分类浏览"""
-    valid_types = {"movie", "tv", "variety", "anime", "recent"}
+    valid_types = {"movie", "tv", "variety", "anime", "recent", "adult"}
     if type not in valid_types:
         raise HTTPException(400, f"无效类型: {type}，可用: {', '.join(valid_types)}")
+    syncing = False
+    if type == "adult":
+        # 成人源已开启但本地内容不足时，自动后台同步（不阻塞本次请求）
+        from app.adult import source_names, sync_status, sync_adult_content
+        if source_names():
+            st = sync_status()
+            if st.get("count", 0) < 30 and not st.get("running"):
+                import threading
+                threading.Thread(target=sync_adult_content, daemon=True).start()
+                syncing = True
+            elif st.get("running"):
+                syncing = True
     results, total = get_videos_by_type(type, page, page_size, genre, area, year)
+    if syncing:
+        return {"results": results, "total": total, "page": page, "syncing": True}
     return {"results": results, "total": total, "page": page}
 
 
@@ -580,11 +594,38 @@ def api_douban_sync():
 @app.get("/api/categories")
 def api_categories():
     """可用分类"""
+    cats = [
+        {"key": "movie", "name": "电影", "icon": "🎬"},
+        {"key": "tv", "name": "电视剧", "icon": "📺"},
+        {"key": "variety", "name": "综艺", "icon": "🎤"},
+        {"key": "anime", "name": "动漫", "icon": "🌸"},
+    ]
+    from app.adult import is_enabled
+    if is_enabled():
+        cats.append({"key": "adult", "name": "成人", "icon": "🔞"})
+    return {"categories": cats}
+
+
+@app.get("/api/config")
+def api_config():
+    """应用配置（前端启动时读取，用于控制导航显隐等）"""
+    from app.adult import is_enabled, source_names
     return {
-        "categories": [
-            {"key": "movie", "name": "电影", "icon": "🎬"},
-            {"key": "tv", "name": "电视剧", "icon": "📺"},
-            {"key": "variety", "name": "综艺", "icon": "🎤"},
-            {"key": "anime", "name": "动漫", "icon": "🌸"},
-        ]
+        "adult_enabled": is_enabled(),
+        "adult_sources": source_names(),
     }
+
+
+@app.post("/api/adult/sync")
+def api_adult_sync():
+    """手动触发成人内容轻量回填（后台执行）"""
+    from app.adult import sync_adult_content
+    import threading
+    threading.Thread(target=sync_adult_content, daemon=True).start()
+    return {"success": True, "message": "成人内容同步已启动"}
+
+
+@app.get("/api/adult/sync-status")
+def api_adult_sync_status():
+    from app.adult import sync_status
+    return sync_status()
