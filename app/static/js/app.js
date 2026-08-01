@@ -32,6 +32,11 @@ let _heroData = null;          // 当前首页 Hero 数据
 let _probeInfo = null;         // 源站测速结果 {ttfb_ms, speed_mbs}
 let _altSources = [];          // 备用源列表 [{source, play_url}]
 let _altIndex = -1;            // 当前备用源索引
+let _lines = [];               // 播放链候选线路（play-lines）
+let _lineIndex = -1;           // 当前线路下标
+let _linesLoaded = false;      // 本次播放会话是否已拉取播放链
+let _stallTimer = null;        // 卡顿自动换线定时器
+let _srcStatusAt = 0;          // 源状态最近刷新时间
 
 function esc(s) {
   if (!s) return "";
@@ -470,8 +475,11 @@ function ensureDiagElements() {
       '<div class="diag-row"><span>缓冲提前</span><span id="diag-buffer">—</span></div>' +
       '<div class="diag-row"><span>清晰度 / 码率</span><span id="diag-level">—</span></div>' +
       '<div class="diag-row"><span>进度</span><span id="diag-progress">—</span></div>' +
+      '<div class="diag-row"><span>播放线路</span><span id="diag-line">—</span></div>' +
       '<div class="diag-title">最近缓冲</div>' +
-      '<div id="diag-events" class="diag-events">暂无缓冲记录</div>';
+      '<div id="diag-events" class="diag-events">暂无缓冲记录</div>' +
+      '<div class="diag-title">源状态</div>' +
+      '<div id="diag-sources" class="diag-events">—</div>';
     document.body.appendChild(panel);
   }
   // 全屏的是 #player-stage，OSD/面板必须挂到它下面，全屏时才可见
@@ -529,10 +537,44 @@ function updateDiagPanel() {
   }
   document.getElementById("diag-level").textContent = levelText;
   document.getElementById("diag-progress").textContent = video ? fmtTime(video.currentTime) + " / " + fmtTime(video.duration) : "—";
+  const lineEl = document.getElementById("diag-line");
+  if (lineEl) {
+    lineEl.textContent = _lines.length
+      ? (Math.max(0, _lineIndex + 1) + "/" + _lines.length + " · " + (_currentSourceName || ""))
+      : (_currentSourceName || "—");
+  }
   const events = getBufferLog().slice(-5).reverse();
   document.getElementById("diag-events").textContent = events.length
     ? events.map(ev => new Date(ev.t).toLocaleTimeString("zh-CN", { hour12: false }) + "  " + (ev.host || "?") + "  " + formatSpeed(ev.speed) + " 缓冲" + ev.duration + "s").join("\n")
     : "暂无缓冲记录";
+  if (Date.now() - _srcStatusAt > 30000) refreshSourceStatus();
+}
+
+// 源健康状态（诊断面板底部，30 秒内不重复请求）
+async function refreshSourceStatus() {
+  _srcStatusAt = Date.now();
+  const el = document.getElementById("diag-sources");
+  if (!el) return;
+  try {
+    const [st, srcs] = await Promise.all([
+      fetch("/api/ops/status").then(r => r.json()),
+      fetch("/api/sources").then(r => r.json()),
+    ]);
+    const states = {};
+    (st.sources || []).forEach(s => { states[s.name] = s; });
+    const lines = (srcs.sources || [])
+      .filter(s => s.type === "maccms")
+      .map(s => {
+        const h = states[s.name] || {};
+        const stTxt = h.state === "dead" ? "已隔离" : (h.state === "slow" ? "慢" : (h.state === "ok" ? "正常" : "未测"));
+        const lat = h.latency_ms ? h.latency_ms + "ms" : "";
+        const err = h.last_error ? " " + h.last_error.slice(0, 40) : "";
+        return s.name + " [" + stTxt + "] " + lat + err;
+      });
+    el.textContent = lines.length ? lines.join("\n") : "暂无源状态数据（启动后自动检查）";
+  } catch (e) {
+    el.textContent = "源状态获取失败";
+  }
 }
 
 function toggleDiagPanel() {
@@ -554,15 +596,18 @@ function bindBufferEvents(video) {
   video.addEventListener("loadstart", () => showBufferOSD("加载中…"));
   video.addEventListener("waiting", () => {
     if (!_bufferSince) _bufferSince = Date.now();
+    startStallTimer();
     showBufferOSD();
   });
   video.addEventListener("stalled", () => {
     if (!_bufferSince) _bufferSince = Date.now();
+    startStallTimer();
     showBufferOSD();
   });
   const endBuffer = () => {
     hideBufferOSD();
     clearLoadTimer();
+    clearStallTimer();
     if (_bufferSince) {
       recordBufferEvent((Date.now() - _bufferSince) / 1000);
       _bufferSince = 0;
@@ -570,6 +615,28 @@ function bindBufferEvents(video) {
   };
   video.addEventListener("playing", endBuffer);
   video.addEventListener("canplay", endBuffer);
+}
+
+// 卡顿超过 12 秒且播放链有备用线路时，自动切换线路
+function startStallTimer() {
+  clearStallTimer();
+  _stallTimer = setTimeout(() => {
+    _stallTimer = null;
+    const video = document.getElementById("tv-video");
+    if (!video || video.paused || video.ended) return;
+    if (!_bufferSince) return;
+    if (Date.now() - _bufferSince < 12000) return;
+    nextLine(_playId, _playEp).then(switched => {
+      if (!switched) {
+        // 无备用线路：保留现有兜底逻辑
+        if (_hlsRetryCount >= 3) trySwitchSource(_playId, _playEp);
+      }
+    });
+  }, 12000);
+}
+
+function clearStallTimer() {
+  if (_stallTimer) { clearTimeout(_stallTimer); _stallTimer = null; }
 }
 
 function clearLoadTimer() {
@@ -586,7 +653,9 @@ function startLoadTimer(video) {
       showBufferOSD("加载超时，自动重试…");
       loadAndPlayUrl(_playId, _playEp);
     } else {
-      trySwitchSource(_playId, _playEp);
+      nextLine(_playId, _playEp).then(switched => {
+        if (!switched) trySwitchSource(_playId, _playEp);
+      });
     }
   }, 20000);
 }
@@ -616,6 +685,10 @@ async function openPlayerAndPlay(videoId, episode, startSeconds) {
   _probeInfo = null;
   _altSources = [];
   _altIndex = -1;
+  _lines = [];
+  _lineIndex = -1;
+  _linesLoaded = false;
+  clearStallTimer();
   clearLoadTimer();
 
   // 立即构建播放器并同步请求全屏（保持用户手势的同步调用栈，保证全屏激活有效）
@@ -624,6 +697,7 @@ async function openPlayerAndPlay(videoId, episode, startSeconds) {
     '  <button class="player-nav-btn" id="btn-prev" onclick="switchEpisode(\'prev\')">◀ 上一集</button>' +
     '  <span class="player-nav-title" id="player-title">加载中…</span>' +
     '  <button class="player-nav-btn" id="btn-next" onclick="switchEpisode(\'next\')">下一集 ▶</button>' +
+    '  <button class="player-nav-btn" id="btn-line" onclick="cycleLine()">线路</button>' +
     '  <button class="player-nav-btn" id="btn-fs" onclick="toggleFullscreen()">⛶</button>' +
     '  <button class="player-nav-btn" id="btn-diag" onclick="toggleDiagPanel()">ℹ</button>' +
     '  <button class="player-close-btn" onclick="stopPlayerFromClose()">✕</button>' +
@@ -675,6 +749,10 @@ async function switchEpisode(dir) {
   _probeInfo = null;
   _altSources = [];
   _altIndex = -1;
+  _lines = [];
+  _lineIndex = -1;
+  _linesLoaded = false;
+  clearStallTimer();
   // 同步请求全屏（保留按键手势激活），未在全屏时进入全屏
   const stage = document.getElementById("player-stage");
   if (stage && !document.fullscreenElement && !document.webkitFullscreenElement) {
@@ -785,7 +863,9 @@ async function loadAndPlayUrl(videoId, episode, overrideUrl, overrideSource) {
           showBufferOSD("网络波动，正在重试…");
           setTimeout(() => { try { hls.startLoad(); } catch (e) {} }, 1500);
         } else {
-          trySwitchSource(_playId, _playEp);
+          nextLine(_playId, _playEp).then(switched => {
+            if (!switched) trySwitchSource(_playId, _playEp);
+          });
         }
       });
     } else {
@@ -804,8 +884,13 @@ async function loadAndPlayUrl(videoId, episode, overrideUrl, overrideSource) {
     startLoadTimer(video);
     // 异步源站测速（拉清单+首分片），不阻塞播放
     probeSource(data.play_url, data.referer || "");
-    // 多源测速优选：后台查找更快/码率更高的源，慢源自动切换
-    if (!overrideUrl) tryBestSource(videoId, episode, data.play_url);
+    // 播放链：预取全部候选线路（后台），失败/卡顿时自动切换
+    if (!overrideUrl) {
+      if (!_linesLoaded) fetchPlayLines(videoId, episode);
+      if (!_lines.length && !_linesLoaded) tryBestSource(videoId, episode, data.play_url);
+    } else {
+      updateLineButton();
+    }
   } catch (e) {
     _playFailed = true;
     showBufferOSD("网络请求失败，按 Enter 重试");
@@ -873,6 +958,101 @@ async function trySwitchSource(videoId, episode) {
   }
   _playFailed = true;
   showBufferOSD("播放失败，按 Enter 重试");
+}
+
+/* -- 播放链：预取候选线路 + 失败/卡顿自动切换 + 手动切换 -- */
+
+function linePlayUrl(line) {
+  if (!line || !line.play_url) return "";
+  if (!line.use_proxy) return line.play_url;
+  const p = [];
+  if (line.headers) {
+    if (line.headers.referer) p.push("ref=" + encodeURIComponent(line.headers.referer));
+    if (line.headers.ua) p.push("ua=" + encodeURIComponent(line.headers.ua));
+    if (line.headers.origin) p.push("origin=" + encodeURIComponent(line.headers.origin));
+    if (line.headers.cookie) p.push("cookie=" + encodeURIComponent(line.headers.cookie));
+  }
+  const qs = p.length ? "&" + p.join("&") : "";
+  const isM3u8 = line.play_url.toLowerCase().indexOf(".m3u8") > 0;
+  return (isM3u8 ? "/api/hls-proxy?url=" : "/api/media-proxy?url=")
+    + encodeURIComponent(line.play_url) + qs;
+}
+
+async function fetchPlayLines(videoId, episode) {
+  if (_linesLoaded) return;
+  try {
+    const res = await fetch("/api/video/" + videoId + "/play-lines" +
+      (episode ? "?episode=" + episode : ""));
+    const data = await res.json();
+    _linesLoaded = true;
+    _lines = ((data && data.lines) || []).filter(l => l && l.play_url);
+    _lineIndex = -1;
+    for (let i = 0; i < _lines.length; i++) {
+      if (_lines[i].current || _lines[i].play_url === _currentUrl) { _lineIndex = i; break; }
+    }
+    updateLineButton();
+    // 播放链不足时，继续用旧的 best-source 后台补充（跨源搜索候选）
+    if (_lines.length <= 1 && !_altSources.length && !_playFailed) {
+      tryBestSource(videoId, episode, _currentUrl);
+    }
+  } catch (e) {
+    // 播放链获取失败时回退到旧的 best-source 兜底
+    tryBestSource(videoId, episode, _currentUrl);
+  }
+}
+
+function updateLineButton() {
+  const btn = document.getElementById("btn-line");
+  if (!btn) return;
+  btn.textContent = _lines.length > 1
+    ? "线路 " + Math.max(0, _lineIndex + 1) + "/" + _lines.length
+    : "线路";
+}
+
+// 手动切换线路（播放条“线路”按钮）
+async function cycleLine() {
+  if (!_lines.length) {
+    showBufferOSD("暂无其他线路，正在查找备用源…");
+    try {
+      await trySwitchSource(_playId, _playEp);
+    } finally {
+      setTimeout(hideBufferOSD, 2500);
+    }
+    return;
+  }
+  let idx = _lineIndex < 0 ? -1 : _lineIndex;
+  for (let i = 1; i <= _lines.length; i++) {
+    const j = (idx + i) % _lines.length;
+    const line = _lines[j];
+    if (!line || line.error) continue;
+    if (line.play_url === _currentUrl) continue;
+    _lineIndex = j;
+    _hlsRetryCount = 0;
+    showBufferOSD("已切换线路 " + (line.source || "未知") +
+      (line.speed_kbs ? " · " + Math.round(line.speed_kbs) + " KB/s" : ""));
+    await loadAndPlayUrl(_playId, _playEp, linePlayUrl(line), line.source);
+    return;
+  }
+  showBufferOSD("播放链中没有其他可用线路");
+  setTimeout(hideBufferOSD, 2500);
+}
+
+// 失败/卡顿自动换线：返回 true 表示已切换
+async function nextLine(videoId, episode) {
+  if (!_lines.length) return false;
+  let idx = _lineIndex < 0 ? -1 : _lineIndex;
+  for (let i = 1; i <= _lines.length; i++) {
+    const j = (idx + i) % _lines.length;
+    const line = _lines[j];
+    if (!line || line.error) continue;
+    if (line.play_url === _currentUrl) continue;
+    _lineIndex = j;
+    _hlsRetryCount = 0;
+    showBufferOSD("当前线路不可用，切换到 " + (line.source || "备用线路"));
+    await loadAndPlayUrl(videoId, episode, linePlayUrl(line), line.source);
+    return true;
+  }
+  return false;
 }
 
 function updatePlayerButtons() {
@@ -953,6 +1133,10 @@ function stopPlayerInternal(saveProgressNow) {
   _probeInfo = null;
   _playFailed = false;
   _hlsRetryCount = 0;
+  _lines = [];
+  _lineIndex = -1;
+  _linesLoaded = false;
+  clearStallTimer();
   if (_diagVisible) { _diagVisible = false; const p = document.getElementById("diag-panel"); if (p) p.classList.add("hidden"); }
   if (_diagTimer) { clearInterval(_diagTimer); _diagTimer = null; }
   const video = document.getElementById("tv-video");

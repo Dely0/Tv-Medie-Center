@@ -55,6 +55,10 @@ def start_online_scheduler():
 
 def main():
     init_db()
+    # 安装 DoH 解析回退（系统 DNS 失败时自动使用）
+    from app.net import doh
+    from config import DOH_ENABLED
+    doh.install(DOH_ENABLED)
     # 加载 MacCMS 源配置
     config_path = os.path.join(os.path.dirname(__file__), "data", "maccms_sources.json")
     if os.path.exists(config_path):
@@ -66,6 +70,11 @@ def main():
     start_crawler_scheduler()
     # 启动在线任务（远程换源 + 豆瓣榜单）
     start_online_scheduler()
+    # 启动源健康检查与社区订阅同步（阶段 A）
+    from app.ops.health import start_health_scheduler
+    from app.ops.sync import start_sync_scheduler
+    start_health_scheduler()
+    start_sync_scheduler()
     # 启动服务（使用 bat 脚本打开浏览器，会带 --start-fullscreen）
     uvicorn.run(app, host="0.0.0.0", port=PORT, log_level="info")
 

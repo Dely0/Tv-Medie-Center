@@ -52,7 +52,8 @@ def _cached_speed(url: str):
     return None
 
 
-def measure_source(url: str, referer: str = "", force: bool = False) -> dict:
+def measure_source(url: str, referer: str = "", force: bool = False,
+                   headers: dict = None, ua: str = None) -> dict:
     """测单个播放地址：解析 master 最高码率 + 下载首分片测速。
     返回 {play_url, host, speed_kbs, ttfb_ms, max_bandwidth_kbps, error}"""
     if not url or not url.startswith("http"):
@@ -62,7 +63,11 @@ def measure_source(url: str, referer: str = "", force: bool = False) -> dict:
         cached["play_url"] = url
         return cached
 
-    h = {"User-Agent": _UA}
+    h = {"User-Agent": ua or _UA}
+    if headers:
+        h.update({k: str(v) for k, v in headers.items() if k.lower() in (
+            "user-agent", "referer", "origin", "cookie", "accept", "accept-language",
+        )})
     if referer:
         h["Referer"] = referer
     result = {"play_url": url, "host": _get_cache_key(url)}
@@ -115,9 +120,12 @@ def measure_source(url: str, referer: str = "", force: bool = False) -> dict:
         t1 = time.time()
         rr = requests.get(seg_url, timeout=8, headers=h, stream=True)
         got = 0
+        hard_deadline = time.time() + 9
         for chunk in rr.iter_content(65536):
             got += len(chunk)
             if got >= 524288:
+                break
+            if time.time() > hard_deadline:
                 break
         t2 = time.time()
         dt = max(t2 - t1, 0.001)

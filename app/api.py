@@ -383,6 +383,17 @@ def api_video_best_source(
     return find_best_source(video_id, episode)
 
 
+@app.get("/api/video/{video_id}/play-lines")
+def api_video_play_lines(
+    video_id: int,
+    episode: int = Query(default=None, description="剧集编号"),
+    refresh: bool = Query(default=False, description="强制重新测速"),
+):
+    """播放链：同一视频在所有启用源中的候选线路（测速排序），前端播放失败/卡顿自动切换。"""
+    from app.source_framework.play_lines import get_play_lines
+    return get_play_lines(video_id, episode, refresh=refresh)
+
+
 @app.get("/api/probe")
 def api_probe(
     url: str = Query(default="", description="播放地址"),
@@ -445,6 +456,60 @@ def api_probe(
     except Exception as e:
         out["error"] = str(e)[:80]
     return out
+
+
+# ---------- 本地代理：防盗链/跨域 HLS 与媒体转发 ----------
+
+@app.get("/api/hls-proxy")
+def api_hls_proxy(
+    url: str = Query(default="", description="m3u8 地址"),
+    ref: str = Query(default="", description="防盗链 Referer"),
+    ua: str = Query(default="", description="User-Agent"),
+    origin: str = Query(default="", description="Origin"),
+    cookie: str = Query(default="", description="Cookie"),
+):
+    from app.net.proxy import hls_proxy
+    return hls_proxy(url, ref, ua, origin, cookie)
+
+
+@app.get("/api/media-proxy")
+def api_media_proxy(
+    url: str = Query(default="", description="媒体文件地址"),
+    ref: str = Query(default="", description="防盗链 Referer"),
+    ua: str = Query(default="", description="User-Agent"),
+    origin: str = Query(default="", description="Origin"),
+    cookie: str = Query(default="", description="Cookie"),
+    range: str = Query(default="", description="Range 头"),
+):
+    from app.net.proxy import media_proxy
+    return media_proxy(url, ref, ua, origin, cookie, range)
+
+
+# ---------- 源运维：健康检查 / 社区订阅 ----------
+
+@app.get("/api/ops/status")
+def api_ops_status():
+    """源健康状态与隔离情况。"""
+    from app.ops.health import get_status
+    return get_status()
+
+
+@app.post("/api/ops/run-health-check")
+def api_ops_run_health_check():
+    """手动触发全量源健康检查（后台执行）。"""
+    from app.ops.health import run_health_check
+    import threading
+    threading.Thread(target=run_health_check, daemon=True).start()
+    return {"success": True, "message": "健康检查已在后台启动"}
+
+
+@app.post("/api/ops/sync-now")
+def api_ops_sync_now():
+    """手动触发社区 TVBox 订阅同步（后台执行）。"""
+    from app.ops.sync import sync_now
+    return sync_now()
+
+
 # ─── 观看历史 ───
 
 @app.get("/api/history")
@@ -495,12 +560,20 @@ def api_sources():
     """所有已配置的视频源"""
     html_sources = get_all_sources()
     maccms_sources = get_maccms_manager().get_all()
+    from app.ops.health import _read as _health_read
+    health = _health_read()
     return {
         "sources": [
             {"name": s.name, "base_url": s.base_url, "enabled": s.enabled, "type": "html"}
             for s in html_sources
         ] + [
-            {"name": s.name, "base_url": s.base_url, "enabled": s.enabled, "type": "maccms"}
+            {
+                "name": s.name,
+                "base_url": s.base_url,
+                "enabled": s.enabled,
+                "type": "maccms",
+                "health": health.get(s.name, {}),
+            }
             for s in maccms_sources
         ]
     }

@@ -29,3 +29,33 @@ USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:126.0) Gecko/20100101 Firefox/126.0",
 ]
+
+# ============ 阶段 A：源稳定性 ============
+
+# DoH 解析：系统 DNS 解析失败时回退到 DoH（防 DNS 污染）
+DOH_ENABLED = True
+
+# 源健康状态文件（周期健康检查/自动隔离）
+SOURCE_HEALTH_FILE = os.path.join(DATA_DIR, "source_health.json")
+SOURCE_HEALTH_INTERVAL = 6 * 3600  # 健康检查周期（秒）
+SOURCE_HEALTH_DEAD_AFTER = 3       # 连续失败多少次判定为失效并隔离
+
+# 社区源配置（自动从 TVBox 订阅提取 MacCMS 源，独立于远程主配置，防止被覆盖）
+COMMUNITY_SOURCES_FILE = os.path.join(DATA_DIR, "maccms_community.json")
+TVBOX_SUBSCRIPTIONS = [
+    "http://fty.xxooo.cf/tv",
+    "http://www.xn--7blz1a99f.cc/tv",
+    "https://gh-proxy.net/https://raw.githubusercontent.com/yoursmile66/TVBox/refs/heads/main/XC.json",
+]
+TVBOX_SYNC_INTERVAL = 24 * 3600  # 订阅同步周期（秒）
+
+# 解析器配置（jx 解析源，从 TVBox 配置 parses 提取或手动维护）
+PARSE_SOURCES_FILE = os.path.join(DATA_DIR, "parse_sources.json")
+
+# 播放链（play-lines）
+PLAY_LINES_LIMIT = 6          # 最多返回多少条候选线路
+PLAY_LINES_MEASURE_TIMEOUT = 8  # 播放链测速总超时（秒）
+
+# 本地代理
+HLS_PROXY_MAX_CACHE_MB = 512  # HLS 分片缓存上限（预留，当前实现为透传）
+HLS_PROXY_TIMEOUT = 20        # 代理请求超时（秒）

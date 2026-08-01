@@ -76,20 +76,20 @@ class MaccmsSource:
     """
 
     def __init__(self, name: str, base_url: str, category_map: dict = None,
-                 enabled: bool = True, proxy: str = None):
+                 enabled: bool = True, proxy: str = None, headers: dict = None):
         self.name = name
         self.base_url = base_url.rstrip("/")
         self.api_url = f"{self.base_url}/api.php/provide/vod"
         self.category_map = category_map or DEFAULT_CATEGORY_IDS.copy()
         self.enabled = enabled
         self.proxy = proxy
+        self.header_profile = headers or {}
 
     def _headers(self) -> dict:
-        return {
-            "User-Agent": random.choice(USER_AGENTS),
-            "Referer": self.base_url,
-            "Accept": "application/json, text/plain, */*",
-        }
+        from app.net.headers import build_headers
+        profile = dict(self.header_profile)
+        profile.setdefault("referer", self.base_url)
+        return build_headers(profile, self.base_url)
 
     def _request(self, params: dict, timeout: int = None) -> Optional[dict]:
         """调用 MacCMS API（直接用 urllib，避免 cloudscraper 卡住）"""
@@ -562,11 +562,39 @@ class MaccmsSourceManager:
                         category_map=item.get("category_map"),
                         enabled=True,
                         proxy=item.get("proxy"),
+                        headers=item.get("headers"),
                     )
                     self._sources.append(source)
                 logger.info(f"从配置加载了 {len(self._sources)} 个 MacCMS 源")
         except Exception as e:
             logger.error(f"加载 MacCMS 配置失败: {e}")
+
+        # 加载社区源（自动从 TVBox 订阅提取，独立文件，避免被远程主配置覆盖）
+        try:
+            import config as _cfg
+            if os.path.exists(_cfg.COMMUNITY_SOURCES_FILE):
+                with open(_cfg.COMMUNITY_SOURCES_FILE, "r", encoding="utf-8") as f:
+                    community = json.load(f)
+                existing_bases = {s.base_url for s in self._sources}
+                added = 0
+                for item in community.get("sources", []):
+                    base_url = (item.get("base_url") or "").rstrip("/")
+                    if not base_url or base_url in existing_bases:
+                        continue
+                    self._sources.append(MaccmsSource(
+                        name=item.get("name", base_url),
+                        base_url=base_url,
+                        category_map=item.get("category_map"),
+                        enabled=True,
+                        headers=item.get("headers"),
+                    ))
+                    existing_bases.add(base_url)
+                    added += 1
+                if added:
+                    logger.info(f"已加载 {added} 个社区源")
+        except Exception as e:
+            logger.warning(f"加载社区源失败: {e}")
+
         # 附加成人源（开关开启时；关闭时 get_adult_sources 返回空）
         try:
             from app.adult import get_adult_sources
@@ -637,7 +665,10 @@ def get_maccms_crawlable_sources() -> list:
     if not sources:
         return []
     wrapped = []
+    from app.ops.health import is_source_dead
     for src in sources:
+        if is_source_dead(src.name):
+            continue
         wrapped.append(_MaccmsWrapper(src))
     return wrapped
 
