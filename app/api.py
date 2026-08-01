@@ -302,15 +302,18 @@ def api_play(
     # 提供 Referer 供前端源站测速使用
     referer = ""
     use_proxy = False
+    drpy_src = None
     for s in get_maccms_manager().get_all():
         if s.name == detail.get("source", ""):
             referer = s.base_url + "/"
             break
     if not referer:
         from app.source_framework.drpy_source import get_registry
-        if get_registry().get_by_name(detail.get("source", "")):
+        drpy_src = get_registry().get_by_name(detail.get("source", ""))
+        if drpy_src:
             # drpy 源走本地代理，避免浏览器 CORS/防盗链导致卡顿
             use_proxy = True
+            referer = (drpy_src.header_profile or {}).get("referer", "")
 
     return {
         "success": True,
@@ -319,6 +322,7 @@ def api_play(
         "play_url": play_url,
         "source": detail.get("source", ""),
         "referer": referer,
+        "headers": drpy_src.header_profile if use_proxy and drpy_src else {},
         "use_proxy": use_proxy,
         "start_seconds": start_seconds,
     }

@@ -30,6 +30,15 @@ def _client_headers(ref: str = "", ua: str = "", origin: str = "", cookie: str =
     return headers
 
 
+def _default_referer(url: str) -> str:
+    """防盗链兜底：未指定 Referer 时用上游站点根地址。"""
+    try:
+        p = urllib.parse.urlparse(url)
+        return f"{p.scheme}://{p.netloc}/"
+    except Exception:
+        return ""
+
+
 def _cors_headers() -> dict:
     return {
         "Access-Control-Allow-Origin": "*",
@@ -42,7 +51,7 @@ def hls_proxy(url: str, ref: str = "", ua: str = "", origin: str = "", cookie: s
     """拉取 m3u8（master 或 media），重写其中的相对/绝对地址为本代理地址。"""
     if not url.startswith(("http://", "https://")):
         raise HTTPException(400, "无效地址")
-    headers = _client_headers(ref, ua, origin, cookie)
+    headers = _client_headers(ref or _default_referer(url), ua, origin, cookie)
     try:
         resp = requests.get(url, headers=headers, timeout=HLS_PROXY_TIMEOUT, stream=True)
     except Exception as e:
@@ -96,7 +105,7 @@ def media_proxy(url: str, ref: str = "", ua: str = "", origin: str = "", cookie:
     """mp4/flv 等媒体的 Range 透传代理。"""
     if not url.startswith(("http://", "https://")):
         raise HTTPException(400, "无效地址")
-    headers = _client_headers(ref, ua, origin, cookie)
+    headers = _client_headers(ref or _default_referer(url), ua, origin, cookie)
     if range_header:
         headers["Range"] = range_header
     try:

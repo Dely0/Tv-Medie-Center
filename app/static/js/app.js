@@ -27,6 +27,7 @@ let _loadTimer = null;         // 播放加载超时定时器
 let _hlsRetryCount = 0;        // HLS 错误重试次数
 let _playFailed = false;       // 播放失败（等待 Enter 重试）
 let _hlsBytes = 0;             // 当前 HLS 源累计下载字节
+let _lastHlsError = "";        // 最近一次 HLS 错误详情（诊断用）
 let _startSeconds = 0;         // 续播起始秒数
 let _heroData = null;          // 当前首页 Hero 数据
 let _probeInfo = null;         // 源站测速结果 {ttfb_ms, speed_mbs}
@@ -481,6 +482,7 @@ function ensureDiagElements() {
       '<div class="diag-row"><span>清晰度 / 码率</span><span id="diag-level">—</span></div>' +
       '<div class="diag-row"><span>进度</span><span id="diag-progress">—</span></div>' +
       '<div class="diag-row"><span>播放线路</span><span id="diag-line">—</span></div>' +
+      '<div class="diag-row"><span>最近错误</span><span id="diag-hlserr">—</span></div>' +
       '<div class="diag-title">最近缓冲</div>' +
       '<div id="diag-events" class="diag-events">暂无缓冲记录</div>' +
       '<div class="diag-title">源状态</div>' +
@@ -548,6 +550,8 @@ function updateDiagPanel() {
       ? (Math.max(0, _lineIndex + 1) + "/" + _lines.length + " · " + (_currentSourceName || ""))
       : (_currentSourceName || "—");
   }
+  const errEl = document.getElementById("diag-hlserr");
+  if (errEl) errEl.textContent = _lastHlsError || "—";
   const events = getBufferLog().slice(-5).reverse();
   document.getElementById("diag-events").textContent = events.length
     ? events.map(ev => new Date(ev.t).toLocaleTimeString("zh-CN", { hour12: false }) + "  " + (ev.host || "?") + "  " + formatSpeed(ev.speed) + " 缓冲" + ev.duration + "s").join("\n")
@@ -688,6 +692,7 @@ async function openPlayerAndPlay(videoId, episode, startSeconds) {
   _speedSamples = [];
   _lastSpeed = 0;
   _probeInfo = null;
+  _lastHlsError = "";
   _altSources = [];
   _altIndex = -1;
   _lines = [];
@@ -756,6 +761,7 @@ async function switchEpisode(dir) {
   _hlsRetryCount = 0;
   _startSeconds = 0;
   _probeInfo = null;
+  _lastHlsError = "";
   _altSources = [];
   _altIndex = -1;
   _lines = [];
@@ -807,10 +813,16 @@ async function loadAndPlayUrl(videoId, episode, overrideUrl, overrideSource) {
 
     // drpy 源统一走本地代理（同源请求，规避浏览器 CORS/防盗链导致的卡顿/失败）
     if (data.use_proxy && data.play_url && !overrideUrl) {
-      const ref = data.referer ? "&ref=" + encodeURIComponent(data.referer) : "";
+      const h = data.headers || {};
+      const p = [];
+      if (data.referer || h.referer) p.push("ref=" + encodeURIComponent(data.referer || h.referer));
+      if (h.ua) p.push("ua=" + encodeURIComponent(h.ua));
+      if (h.origin) p.push("origin=" + encodeURIComponent(h.origin));
+      if (h.cookie) p.push("cookie=" + encodeURIComponent(h.cookie));
+      const qs = p.length ? "&" + p.join("&") : "";
       const isM3u8 = data.play_url.toLowerCase().indexOf(".m3u8") > 0;
       data.play_url = (isM3u8 ? "/api/hls-proxy?url=" : "/api/media-proxy?url=")
-        + encodeURIComponent(data.play_url) + ref;
+        + encodeURIComponent(data.play_url) + qs;
     }
 
     document.getElementById("player-title").textContent = data.episode_title || (episode ? "第" + episode + "集" : "");
@@ -821,6 +833,7 @@ async function loadAndPlayUrl(videoId, episode, overrideUrl, overrideSource) {
     _bufferSince = 0;
     _hlsBytes = 0;
     _probeInfo = null;
+    _lastHlsError = "";
 
     const video = document.getElementById("tv-video");
     if (!video) return;
@@ -880,13 +893,14 @@ async function loadAndPlayUrl(videoId, episode, overrideUrl, overrideSource) {
       hls.on(Hls.Events.ERROR, (_evt, data) => {
         if (!data || !data.fatal) return;
         clearLoadTimer();
+        _lastHlsError = (data.details || "") + (data.response && data.response.code ? " HTTP " + data.response.code : "");
         if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
           try { hls.recoverMediaError(); } catch (e) {}
           return;
         }
         if (_hlsRetryCount < 3) {
           _hlsRetryCount++;
-          showBufferOSD("网络波动，正在重试…");
+          showBufferOSD("网络波动，正在重试…" + (_lastHlsError ? " (" + _lastHlsError + ")" : ""));
           setTimeout(() => { try { hls.startLoad(); } catch (e) {} }, 1500);
         } else {
           nextLine(_playId, _playEp).then(switched => {
@@ -1217,6 +1231,7 @@ function stopPlayerInternal(saveProgressNow) {
   _lastSpeed = 0;
   _hlsBytes = 0;
   _probeInfo = null;
+  _lastHlsError = "";
   _playFailed = false;
   _hlsRetryCount = 0;
   _lines = [];

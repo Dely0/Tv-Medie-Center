@@ -32,7 +32,11 @@ def _pick_episode(episodes, episode):
 def _header_profile(source_name: str) -> dict | None:
     from app.maccms_source import get_manager
     src = get_manager().get_by_name(source_name)
-    return getattr(src, "header_profile", None) if src else None
+    if src:
+        return getattr(src, "header_profile", None)
+    from app.source_framework.drpy_source import get_registry
+    dsrc = get_registry().get_by_name(source_name)
+    return dsrc.header_profile if dsrc else None
 
 
 def _gather_candidates(video_id: int, episode: int | None, max_candidates: int):
@@ -116,6 +120,8 @@ def _measure_candidates(candidates: list[dict], timeout: float) -> list[dict]:
             measure_source, c["play_url"],
             (profile or {}).get("referer", ""),
             False,
+            profile or {},
+            (profile or {}).get("ua"),
         )] = (c, profile)
     deadline = time.time() + timeout
     done = set()

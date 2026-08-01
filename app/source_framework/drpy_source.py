@@ -113,6 +113,39 @@ def _default_enabled(name: str) -> bool:
     return any(kw in name for kw in _MOVIE_HINTS)
 
 
+def _extract_js_headers(key: str, stype: int) -> dict:
+    """从 drpyS 爬虫脚本中提取静态请求头（如荐片 App 专属 UA）。
+    仅解析简单的 headers: { 'Key': 'value' } 字面量。"""
+    try:
+        module = key.split("_", 1)[1] if "_" in key else key
+        if stype == 4:
+            path = os.path.join(cfg.DRPYS_DIR, "spider", "js", module + ".js")
+        elif stype == 3 and key.startswith("catvod_"):
+            path = os.path.join(cfg.DRPYS_DIR, "spider", "catvod", module + ".js")
+        else:
+            return {}
+        if not os.path.exists(path):
+            return {}
+        src = open(path, "r", encoding="utf-8", errors="replace").read()
+        m = re.search(r"headers\s*:\s*\{([^}]*)\}", src, re.S)
+        if not m:
+            return {}
+        body = m.group(1)
+        headers = {}
+        for pair in re.finditer(r"['\"]?([A-Za-z0-9_\-]+)['\"]?\s*:\s*['\"]([^'\"]*)['\"]", body):
+            key = pair.group(1).strip()
+            val = pair.group(2).strip()
+            if key.lower() in ("user-agent", "ua"):
+                headers["ua"] = val
+            elif key.lower() == "referer":
+                headers["referer"] = val
+            elif key.lower() in ("origin", "cookie"):
+                headers[key.lower()] = val
+        return headers
+    except Exception:
+        return {}
+
+
 class DrpySource:
     """单个 drpyS 站点（与 MaccmsSource 接口对齐）。"""
 
@@ -131,7 +164,7 @@ class DrpySource:
         self.enabled = enabled
         self.adult = adult
         self.category_map = category_map or {"movie": "1", "tv": "2", "variety": "3", "anime": "4"}
-        self.header_profile = None
+        self.header_profile = _extract_js_headers(self.key, self.type)
         self.base_url = re.match(r"(https?://[^/]+)", api_url).group(1) if re.match(r"(https?://[^/]+)", api_url) else ""
 
     # ---------- HTTP ----------
