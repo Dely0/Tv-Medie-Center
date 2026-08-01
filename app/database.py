@@ -4,6 +4,7 @@ import json
 import os
 import re
 import threading
+from collections import Counter
 from contextlib import contextmanager
 from config import DB_PATH
 
@@ -207,15 +208,19 @@ def search_videos(keyword: str, page: int = 1, page_size: int = 30) -> tuple[lis
 
 
 def get_videos_by_type(type_: str, page: int = 1, page_size: int = 30,
-                       genre: str = "") -> tuple[list[dict], int]:
-    """按类型分页查询；type_='recent' 时按更新时间不分类型；genre 非空时按题材过滤"""
+                       genre: str = "", area: str = "", year: str = "") -> tuple[list[dict], int]:
+    """按类型分页查询；type_='recent' 时按更新时间不分类型；genre/area/year 非空时按维度过滤"""
     offset = (page - 1) * page_size
+    conds, params = [], []
+    if genre:
+        conds.append("genre LIKE ?")
+        params.append(f"%{genre}%")
+    if area:
+        conds.append(_area_sql(area))
+    if year:
+        conds.append(_year_sql(year))
     with get_db() as db:
         if type_ == "recent":
-            conds, params = [], []
-            if genre:
-                conds.append("genre LIKE ?")
-                params.append(f"%{genre}%")
             where = (" WHERE " + " AND ".join(conds)) if conds else ""
             count_row = db.execute(f"SELECT COUNT(*) FROM videos{where}", params).fetchone()
             total = count_row[0] if count_row else 0
@@ -224,30 +229,139 @@ def get_videos_by_type(type_: str, page: int = 1, page_size: int = 30,
                 params + [page_size, offset]
             ).fetchall()
         else:
-            conds = ["type=?"]
-            params = [type_]
-            if genre:
-                conds.append("genre LIKE ?")
-                params.append(f"%{genre}%")
-            where = " WHERE " + " AND ".join(conds)
-            count_row = db.execute(f"SELECT COUNT(*) FROM videos{where}", params).fetchone()
+            conds_all = ["type=?"] + conds
+            params_all = [type_] + params
+            where = " WHERE " + " AND ".join(conds_all)
+            count_row = db.execute(f"SELECT COUNT(*) FROM videos{where}", params_all).fetchone()
             total = count_row[0] if count_row else 0
             rows = db.execute(
                 f"SELECT * FROM videos{where} ORDER BY updated_at DESC LIMIT ? OFFSET ?",
-                params + [page_size, offset]
+                params_all + [page_size, offset]
             ).fetchall()
     return [dict(r) for r in rows], total
 
 
-def get_genres(type_: str) -> list[dict]:
-    """某分类下的题材列表（含数量，按数量降序）"""
+def get_genres(type_: str) -> dict:
+    """某分类下的筛选维度：tags(题材) / areas(地区) / years(年份)，各含数量"""
+    result = {"tags": [], "areas": [], "years": []}
     with get_db() as db:
+        # 题材：拆分组合标签后统计
         rows = db.execute(
-            "SELECT genre, COUNT(*) AS cnt FROM videos "
-            "WHERE type=? AND genre != '' GROUP BY genre ORDER BY cnt DESC, genre ASC",
-            (type_,)
+            "SELECT genre FROM videos WHERE type=? AND genre != ''", (type_,)
         ).fetchall()
-    return [{"genre": r["genre"], "count": r["cnt"]} for r in rows]
+        tag_counter = Counter()
+        for (g,) in rows:
+            for part in re.split(r"[,，、/|·\s]+", g):
+                part = part.strip()
+                if part and part not in ("高清", "1080P", "4K", "蓝光", "超清", "完整版"):
+                    tag_counter[part] += 1
+        result["tags"] = [
+            {"key": t, "label": t, "count": c}
+            for t, c in tag_counter.most_common(24)
+        ]
+
+        # 地区：按归一化分组统计
+        rows = db.execute(
+            "SELECT area FROM videos WHERE type=? AND area != ''", (type_,)
+        ).fetchall()
+        area_counter = Counter()
+        for (a,) in rows:
+            key = _normalize_area(a)
+            if key:
+                area_counter[key] += 1
+        area_order = ["国产", "港台", "日韩", "欧美", "泰国", "印度", "其他"]
+        result["areas"] = sorted(
+            [{"key": k, "label": k, "count": c} for k, c in area_counter.items()],
+            key=lambda x: area_order.index(x["key"]) if x["key"] in area_order else 99,
+        )
+
+        # 年份：具体年份 + 年代分组
+        rows = db.execute(
+            "SELECT year FROM videos WHERE type=? AND year IS NOT NULL", (type_,)
+        ).fetchall()
+        year_counter = Counter()
+        for (y,) in rows:
+            key = _year_group(y)
+            if key:
+                year_counter[key] += 1
+        year_items = [{"key": k, "label": k, "count": c} for k, c in year_counter.items()]
+        decade_rank = {"2000年代": 0, "90年代": 1, "80年代": 2, "更早": 3}
+        result["years"] = sorted(
+            year_items,
+            key=lambda x: (0, -int(x["key"])) if x["key"].isdigit()
+            else (1, decade_rank.get(x["key"], 9)),
+        )
+    return result
+
+
+# ─── 分类维度：地区 / 年份 ───
+
+_AREA_GROUPS = {
+    "国产": ["中国大陆", "中国内地", "大陆", "内地", "中国"],
+    "港台": ["香港", "台湾", "澳门"],
+    "日韩": ["日本", "韩国", "日韩"],
+    "欧美": [
+        "美国", "英国", "法国", "德国", "意大利", "西班牙", "加拿大", "俄罗斯",
+        "澳大利亚", "巴西", "墨西哥", "阿根廷", "波兰", "挪威", "苏联", "葡萄牙",
+        "荷兰", "瑞典", "丹麦", "比利时", "瑞士", "爱尔兰", "奥地利", "芬兰",
+        "希腊", "捷克", "乌克兰", "新西兰",
+    ],
+    "泰国": ["泰国"],
+    "印度": ["印度"],
+}
+_AREA_ORDER = ["国产", "港台", "日韩", "欧美", "泰国", "印度"]
+
+
+def _normalize_area(area: str) -> str:
+    """把地区字段归一到分组标签；无法识别时返回'其他'"""
+    a = area or ""
+    for group, keywords in _AREA_GROUPS.items():
+        if any(k in a for k in keywords):
+            return group
+    return "其他"
+
+
+def _area_sql(key: str) -> str:
+    """地区筛选 SQL 片段（与 _normalize_area 的映射保持一致）"""
+    if key not in _AREA_GROUPS and key != "其他":
+        return "1=0"  # 未知名目直接过滤为空
+    if key == "其他":
+        positives = " OR ".join(f"area LIKE '%{k}%'" for kw in _AREA_GROUPS.values() for k in kw)
+        return f"(area != '' AND NOT ({positives}))"
+    keywords = _AREA_GROUPS[key]
+    return "(" + " OR ".join(f"area LIKE '%{k}%'" for k in keywords) + ")"
+
+
+def _year_group(year) -> str | None:
+    """年份 → 筛选项；具体年份只保留 >=2017，其余归入年代分组"""
+    try:
+        y = int(year)
+    except (TypeError, ValueError):
+        return None
+    if y >= 2017:
+        return str(y)
+    if y >= 2000:
+        return "2000年代"
+    if y >= 1990:
+        return "90年代"
+    if y >= 1980:
+        return "80年代"
+    return "更早"
+
+
+def _year_sql(key: str) -> str:
+    """年份筛选 SQL 片段"""
+    if key.isdigit():
+        return f"year={int(key)}"
+    if key == "2000年代":
+        return "year BETWEEN 2000 AND 2016"
+    if key == "90年代":
+        return "year BETWEEN 1990 AND 1999"
+    if key == "80年代":
+        return "year BETWEEN 1980 AND 1989"
+    if key == "更早":
+        return "year < 1980"
+    return "year IS NULL"
 
 
 def get_video_detail(video_id: int) -> dict | None:

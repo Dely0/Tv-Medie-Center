@@ -63,12 +63,14 @@ def api_browse(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=30, ge=1, le=100),
     genre: str = Query(default="", description="题材筛选"),
+    area: str = Query(default="", description="地区筛选"),
+    year: str = Query(default="", description="年份/年代筛选"),
 ):
     """分类浏览"""
     valid_types = {"movie", "tv", "variety", "anime", "recent"}
     if type not in valid_types:
         raise HTTPException(400, f"无效类型: {type}，可用: {', '.join(valid_types)}")
-    results, total = get_videos_by_type(type, page, page_size, genre)
+    results, total = get_videos_by_type(type, page, page_size, genre, area, year)
     return {"results": results, "total": total, "page": page}
 
 
@@ -76,8 +78,11 @@ def api_browse(
 def api_genres(
     type: str = Query(default="movie", description="类型"),
 ):
-    """某分类下的题材列表"""
-    return {"genres": get_genres(type)}
+    """某分类下的筛选维度：tags(题材) / areas(地区) / years(年份)"""
+    data = get_genres(type)
+    # 兼容旧字段
+    data["genres"] = data["tags"]
+    return data
 
 
 # ─── 搜索 ───

@@ -659,10 +659,23 @@ html, body {
 }
 
 /* ─── 浏览页分类标签 ─── */
+.browse-filter-group {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  margin-bottom: 18px;
+}
+.browse-filter-label {
+  flex-shrink: 0;
+  padding-top: 12px;
+  font-size: 20px;
+  color: var(--accent);
+  min-width: 52px;
+}
 .browse-tabs {
   display: flex; gap: 8px;
   flex-wrap: wrap;
-  margin-bottom: 24px;
+  margin-bottom: 0;
 }
 .browse-tab {
   padding: 10px 28px;

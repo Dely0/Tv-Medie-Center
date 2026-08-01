@@ -2,6 +2,8 @@
 let _currentView = "home";
 let _currentType = "";
 let _currentGenre = "";
+let _currentArea = "";
+let _currentYear = "";
 let _searchTimer = null;
 let _searchFocused = false;
 let _searchResultsActive = false; // 搜索结果浏览模式
@@ -193,6 +195,8 @@ async function loadBrowse(type) {
   _browsePage = 1;
   _currentType = type;
   _currentGenre = "";
+  _currentArea = "";
+  _currentYear = "";
   document.getElementById("view-browse").innerHTML = '<div id="browse-content"><div class="loading"><div class="spinner"></div>加载中…</div></div>';
   await loadBrowsePage();
 }
@@ -202,19 +206,22 @@ async function loadBrowsePage(direction) {
   else if (direction === "prev" && _browsePage > 1) _browsePage--;
   const el = document.getElementById("browse-content");
   try {
-    const data = await F("/api/browse?type=" + _currentType + "&page=" + _browsePage + "&genre=" + encodeURIComponent(_currentGenre));
-    let genres = [];
+    const data = await F("/api/browse?type=" + _currentType + "&page=" + _browsePage +
+      "&genre=" + encodeURIComponent(_currentGenre) +
+      "&area=" + encodeURIComponent(_currentArea) +
+      "&year=" + encodeURIComponent(_currentYear));
+    let tags = [], areas = [], years = [];
     try {
       const gd = await F("/api/genres?type=" + _currentType);
-      genres = gd.genres || [];
+      tags = gd.tags || gd.genres || [];
+      areas = gd.areas || [];
+      years = gd.years || [];
     } catch (e) {}
 
-    let html = '<div class="browse-tabs">' +
-      '<button class="browse-tab' + (_currentGenre === "" ? " active" : "") + '" data-genre="">全部</button>';
-    for (const g of genres) {
-      html += '<button class="browse-tab' + (g.genre === _currentGenre ? " active" : "") + '" data-genre="' + escAttr(g.genre) + '">' + esc(g.genre) + '<span class="browse-tab-count">' + g.count + '</span></button>';
-    }
-    html += '</div>';
+    let html =
+      renderFilterGroup("标签", tags, _currentGenre, "tag") +
+      renderFilterGroup("地区", areas, _currentArea, "area") +
+      renderFilterGroup("年份", years, _currentYear, "year");
 
     if (!data.results || !data.results.length) {
       if (direction === "next") _browsePage--;
@@ -231,7 +238,7 @@ async function loadBrowsePage(direction) {
       '</div>';
     el.innerHTML = html;
     document.querySelectorAll("#browse-content .browse-tab").forEach(tab => {
-      tab.onclick = () => selectGenre(tab.getAttribute("data-genre") || "");
+      tab.onclick = () => selectFilter(tab.getAttribute("data-kind"), tab.getAttribute("data-value") || "");
     });
     autoFocusView();
   } catch (e) {
@@ -239,14 +246,28 @@ async function loadBrowsePage(direction) {
   }
 }
 
-function selectGenre(genre) {
-  _currentGenre = genre || "";
+function renderFilterGroup(label, items, activeKey, kind) {
+  let html = '<div class="browse-filter-group"><div class="browse-filter-label">' + esc(label) + '</div><div class="browse-tabs">' +
+    '<button class="browse-tab' + (activeKey === "" ? " active" : "") + '" data-kind="' + kind + '" data-value="">全部</button>';
+  for (const g of items || []) {
+    const key = g.key !== undefined ? g.key : g.genre;
+    const lbl = g.label !== undefined ? g.label : (g.genre !== undefined ? g.genre : key);
+    html += '<button class="browse-tab' + (key === activeKey ? " active" : "") + '" data-kind="' + kind + '" data-value="' + escAttr(key) + '">' +
+      esc(lbl) + '<span class="browse-tab-count">' + (g.count || 0) + '</span></button>';
+  }
+  return html + '</div></div>';
+}
+
+function selectFilter(kind, value) {
+  if (kind === "area") _currentArea = value || "";
+  else if (kind === "year") _currentYear = value || "";
+  else _currentGenre = value || "";
   _browsePage = 1;
   loadBrowsePage();
   // 重渲染后把焦点留在所选 Tab 上
   setTimeout(() => {
     document.querySelectorAll("#browse-content .browse-tab").forEach(tab => {
-      if ((tab.getAttribute("data-genre") || "") === _currentGenre) tab.focus();
+      if (tab.getAttribute("data-kind") === kind && (tab.getAttribute("data-value") || "") === value) tab.focus();
     });
   }, 80);
 }
@@ -687,6 +708,8 @@ async function loadAndPlayUrl(videoId, episode, overrideUrl, overrideSource) {
           }
         } catch (e) {}
         video.play().catch(() => {});
+        // 首次播放若还没进入全屏，尽量再尝试一次（仍在用户手势窗口内）
+        ensureFullscreen();
       });
       hls.on(Hls.Events.FRAG_LOADED, (_evt, data) => {
         if (data && data.stats && data.stats.loaded) {
@@ -723,6 +746,7 @@ async function loadAndPlayUrl(videoId, episode, overrideUrl, overrideSource) {
     } else {
       video.src = data.play_url;
       video.play().catch(() => {});
+      ensureFullscreen();
     }
     // 续播：加载完成后 seek 到上次进度
     if (_startSeconds > 0) {
@@ -817,6 +841,13 @@ function tryFullscreen(el) {
     el.requestFullscreen().catch(() => {});
   } else if (el.webkitRequestFullscreen) {
     el.webkitRequestFullscreen();
+  }
+}
+
+function ensureFullscreen() {
+  const stage = document.getElementById("player-stage");
+  if (stage && !document.fullscreenElement && !document.webkitFullscreenElement) {
+    tryFullscreen(stage);
   }
 }
 
@@ -994,10 +1025,35 @@ document.addEventListener("keydown", function(e) {
       else navigateTo("home");
       return;
     }
-    // 上键: 开关诊断面板
+    // 上键: 全屏时开关诊断面板；非全屏时把焦点移入播放器按钮栏（可再进全屏）
     if (e.key === "ArrowUp") {
       e.preventDefault();
-      toggleDiagPanel();
+      if (document.fullscreenElement || document.webkitFullscreenElement) {
+        toggleDiagPanel();
+        return;
+      }
+      const cur = document.activeElement;
+      if (cur && cur.closest && cur.closest(".player-bar")) {
+        // 已在按钮栏：上键取消焦点回到视频
+        const video = document.getElementById("tv-video");
+        if (video) video.blur();
+        document.body.focus();
+      } else {
+        const btns = Array.from(document.querySelectorAll(".player-nav-btn:not([disabled]), .player-close-btn"));
+        if (btns.length) focusWithScroll(btns[0]);
+      }
+      return;
+    }
+    // 下键: 非全屏时若焦点在按钮栏则移回视频
+    if (e.key === "ArrowDown") {
+      const cur = document.activeElement;
+      if (!(document.fullscreenElement || document.webkitFullscreenElement) &&
+          cur && cur.closest && cur.closest(".player-bar")) {
+        e.preventDefault();
+        const video = document.getElementById("tv-video");
+        if (video) video.blur();
+        document.body.focus();
+      }
       return;
     }
     // 空格 / 遥控 OK 键: 播放/暂停
@@ -1123,7 +1179,7 @@ document.addEventListener("keydown", function(e) {
   }
 
   switch (e.key) {
-    case "Enter":      if (cur) cur.click(); break;
+    case "Enter":      e.preventDefault(); if (cur) cur.click(); break;
     case "Escape": case "Backspace": e.preventDefault(); if (_currentView === "detail") navigateTo("home"); break;
     case "f": case "F": showSearch(); break;
   }
