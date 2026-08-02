@@ -670,6 +670,7 @@ function startLoadTimer(video) {
       keepPlaybackPosition();
       loadAndPlayUrl(_playId, _playEp);
     } else {
+      markCurrentLineFailed("加载超时");
       nextLine(_playId, _playEp).then(switched => {
         if (!switched) trySwitchSource(_playId, _playEp);
       });
@@ -922,6 +923,7 @@ async function loadAndPlayUrl(videoId, episode, overrideUrl, overrideSource) {
           showBufferOSD("网络波动，正在重试…" + (_lastHlsError ? " (" + _lastHlsError + ")" : ""));
           setTimeout(() => { try { hls.startLoad(); } catch (e) {} }, 1500);
         } else {
+          markCurrentLineFailed(_lastHlsError || "网络错误");
           nextLine(_playId, _playEp).then(switched => {
             if (!switched) trySwitchSource(_playId, _playEp);
           });
@@ -952,6 +954,7 @@ async function loadAndPlayUrl(videoId, episode, overrideUrl, overrideSource) {
     }
   } catch (e) {
     _playFailed = true;
+    markCurrentLineFailed("网络请求失败");
     showBufferOSD("网络请求失败，按 Enter 重试");
   }
 }
@@ -1019,6 +1022,7 @@ async function trySwitchSource(videoId, episode) {
     } catch (e) {}
   }
   _playFailed = true;
+  markCurrentLineFailed("播放失败");
   showBufferOSD("播放失败，按 Enter 重试");
 }
 
@@ -1113,6 +1117,22 @@ function updateLineButton() {
   btn.textContent = usable.length > 1
     ? "线路 " + pos + "/" + usable.length
     : "线路";
+}
+
+// 播放失败时立即把当前线路标记为不可用，计数与切换列表同步
+function markCurrentLineFailed(msg) {
+  if (!_lines.length) return;
+  for (let i = 0; i < _lines.length; i++) {
+    const line = _lines[i];
+    const proxied = linePlayUrl(line);
+    if (line.current || line.play_url === _currentUrl || (proxied && proxied === _currentUrl)) {
+      if (!line.error) {
+        line.error = msg || "播放失败";
+        updateLineButton();
+      }
+      break;
+    }
+  }
 }
 
 // 统一口径：可用线路（无错误）与当前所在位置（按当前播放地址匹配）
