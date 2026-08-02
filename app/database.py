@@ -270,7 +270,10 @@ def get_videos_by_type(type_: str, page: int = 1, page_size: int = 30,
     with get_db() as db:
         if type_ == "recent":
             excl_sql, excl_params = _adult_exclude_sql()
-            where = (" WHERE " + " AND ".join(conds) + excl_sql) if (conds or excl_sql) else ""
+            where_parts = list(conds)
+            if excl_sql:
+                where_parts.append(excl_sql[5:])  # 去掉前导 " AND "
+            where = " WHERE " + " AND ".join(where_parts) if where_parts else ""
             params_all = params + excl_params
             count_row = db.execute(f"SELECT COUNT(*) FROM videos{where}", params_all).fetchone()
             total = count_row[0] if count_row else 0

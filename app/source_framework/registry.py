@@ -12,6 +12,7 @@ def get_search_sources() -> list:
     from app.maccms_source import get_maccms_crawlable_sources
     from app.adult import is_enabled
     from app.ops.health import is_source_dead
+    from app.ops.health import sorted_by_priority
     from app.source_framework.drpy_source import get_registry
 
     sources = list(get_maccms_crawlable_sources())
@@ -22,13 +23,14 @@ def get_search_sources() -> list:
         if s.adult and not adult_on:
             continue
         sources.append(s)
-    return sources
+    return sorted_by_priority(sources)
 
 
 def get_drpy_enabled_sources(include_adult: bool = False) -> list:
     """仅返回 drpy 启用源（可选包含成人源）。"""
     from app.adult import is_enabled
     from app.ops.health import is_source_dead
+    from app.ops.health import sorted_by_priority
     from app.source_framework.drpy_source import get_registry
 
     adult_on = is_enabled()
@@ -39,7 +41,7 @@ def get_drpy_enabled_sources(include_adult: bool = False) -> list:
         if s.adult and (not adult_on or not include_adult):
             continue
         out.append(s)
-    return out
+    return sorted_by_priority(out)
 
 
 def get_source_by_name(name: str):

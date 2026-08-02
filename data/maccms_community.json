@@ -1,6 +1,6 @@
 {
-  "_version": 24,
-  "_updated_at": "2026-08-02 02:14:47",
+  "_version": 27,
+  "_updated_at": "2026-08-02 10:49:26",
   "_from": [],
   "sources": [
     {
@@ -355,19 +355,6 @@
       "from_config": "drpys-collect"
     },
     {
-      "name": "♥155(直连)",
-      "base_url": "https://155api.com",
-      "enabled": true,
-      "category_map": {
-        "movie": "1",
-        "tv": "2",
-        "variety": "3",
-        "anime": "4"
-      },
-      "source_type": "maccms",
-      "from_config": "drpys-collect"
-    },
-    {
       "name": "金鹰资源2",
       "base_url": "https://jyzyapi.com",
       "enabled": true,
@@ -617,6 +604,19 @@
     {
       "name": "乐播",
       "base_url": "https://lbapi9.com",
+      "enabled": true,
+      "category_map": {
+        "movie": "1",
+        "tv": "2",
+        "variety": "3",
+        "anime": "4"
+      },
+      "source_type": "maccms",
+      "from_config": "drpys-collect"
+    },
+    {
+      "name": "最大|点播",
+      "base_url": "http://zuidazy.me",
       "enabled": true,
       "category_map": {
         "movie": "1",

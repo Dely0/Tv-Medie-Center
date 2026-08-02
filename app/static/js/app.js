@@ -667,6 +667,7 @@ function startLoadTimer(video) {
     if (_hlsRetryCount < 2) {
       _hlsRetryCount++;
       showBufferOSD("加载超时，自动重试…");
+      keepPlaybackPosition();
       loadAndPlayUrl(_playId, _playEp);
     } else {
       nextLine(_playId, _playEp).then(switched => {
@@ -674,6 +675,16 @@ function startLoadTimer(video) {
       });
     }
   }, 20000);
+}
+
+// 切换线路/重试前记住当前播放位置，新线路加载后自动跳回
+function keepPlaybackPosition() {
+  const v = document.getElementById("tv-video");
+  if (!v) return;
+  const t = v.currentTime || 0;
+  if (t > 2 && isFinite(v.duration)) {
+    _startSeconds = Math.floor(t);
+  }
 }
 
 async function retryPlay() {
@@ -969,6 +980,7 @@ async function tryBestSource(videoId, episode, currentUrl) {
     if (buffering || better) {
       _hlsRetryCount = 0;
       showBufferOSD("已切换到更快线路 " + (bs.best.source || ""));
+      keepPlaybackPosition();
       await loadAndPlayUrl(videoId, episode, bs.best.play_url, bs.best.source);
     }
   } catch (e) {}
@@ -982,6 +994,7 @@ async function trySwitchSource(videoId, episode) {
     _hlsRetryCount = 0;
     const alt = _altSources[_altIndex];
     showBufferOSD("已切换到备用源 " + (alt.source || ""));
+    keepPlaybackPosition();
     await loadAndPlayUrl(videoId, episode, alt.play_url, alt.source);
     return;
   }
@@ -998,6 +1011,7 @@ async function trySwitchSource(videoId, episode) {
         _hlsRetryCount = 0;
         const alt = _altSources[0];
         showBufferOSD("已切换到备用源 " + (alt.source || ""));
+        keepPlaybackPosition();
         await loadAndPlayUrl(videoId, episode, alt.play_url, alt.source);
         return;
       }
@@ -1055,6 +1069,7 @@ async function fetchPlayLines(videoId, episode, forceRefresh) {
           if (better) {
             _autoLineSwitched = true;
             showBufferOSD("已自动切换到更快线路 " + (best.source || ""));
+            keepPlaybackPosition();
             loadAndPlayUrl(videoId, episode, linePlayUrl(best), best.source);
             return;
           }
@@ -1154,6 +1169,7 @@ async function cycleLine() {
     _hlsRetryCount = 0;
     showBufferOSD("已切换线路 " + (line.source || "未知") +
       (line.speed_kbs ? " · " + Math.round(line.speed_kbs) + " KB/s" : ""));
+    keepPlaybackPosition();
     await loadAndPlayUrl(_playId, _playEp, linePlayUrl(line), line.source);
     return;
   }
@@ -1173,6 +1189,7 @@ async function nextLine(videoId, episode) {
     _lineIndex = j;
     _hlsRetryCount = 0;
     showBufferOSD("当前线路不可用，切换到 " + (line.source || "备用线路"));
+    keepPlaybackPosition();
     await loadAndPlayUrl(videoId, episode, linePlayUrl(line), line.source);
     return true;
   }
@@ -1637,7 +1654,11 @@ function moveFocus(dir) {
     if (dir === "left")  { dx = r.left - rr.right;   dy = Math.abs(rr.top - r.top);     ok = dx >= -10; }
     if (dir === "right") { dx = rr.left - r.right;   dy = Math.abs(rr.top - r.top);     ok = dx >= -10; }
     if (!ok) continue;
-    const d = Math.sqrt(dx * dx + dy * dy);
+    // 方向权重：垂直移动时横向偏差权重降低，水平移动时纵向偏差权重降低，
+    // 避免“查看全部”这类位于行首/行尾的按钮被更远但同列的元素抢焦点
+    const hw = (dir === "up" || dir === "down") ? 0.25 : 1;
+    const vw = (dir === "left" || dir === "right") ? 0.25 : 1;
+    const d = Math.sqrt(dx * dx * hw + dy * dy * vw);
     if (d < bestDist) { best = i; bestDist = d; }
   }
   if (best >= 0) {

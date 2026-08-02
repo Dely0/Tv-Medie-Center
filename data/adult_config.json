@@ -1,0 +1,155 @@
+{
+  "enabled": false,
+  "sources": [
+    {
+      "name": "成人源A",
+      "base_url": "https://lbapi9.com",
+      "category_map": {
+        "movie": "1",
+        "tv": "2",
+        "variety": "3",
+        "anime": "4"
+      }
+    },
+    {
+      "name": "成人源B",
+      "base_url": "http://fhapi9.com",
+      "category_map": {
+        "movie": "1",
+        "tv": "2",
+        "variety": "3",
+        "anime": "4"
+      }
+    },
+    {
+      "name": "155成人源",
+      "base_url": "https://155api.com",
+      "category_map": {
+        "movie": "1",
+        "tv": "2",
+        "variety": "3",
+        "anime": "4"
+      }
+    },
+    {
+      "name": "森林资源",
+      "base_url": "https://slapibf.com",
+      "category_map": {
+        "movie": "1",
+        "tv": "2",
+        "variety": "3",
+        "anime": "4"
+      }
+    },
+    {
+      "name": "老色逼资源",
+      "base_url": "https://apilsbzy1.com",
+      "category_map": {
+        "movie": "1",
+        "tv": "2",
+        "variety": "3",
+        "anime": "4"
+      }
+    },
+    {
+      "name": "AIvin",
+      "base_url": "http://lbapiby.com",
+      "category_map": {
+        "movie": "1",
+        "tv": "2",
+        "variety": "3",
+        "anime": "4"
+      }
+    },
+    {
+      "name": "湿乐园",
+      "base_url": "https://xxavs.com",
+      "category_map": {
+        "movie": "1",
+        "tv": "2",
+        "variety": "3",
+        "anime": "4"
+      }
+    },
+    {
+      "name": "奶香香资源",
+      "base_url": "https://naixxzy.com",
+      "category_map": {
+        "movie": "1",
+        "tv": "2",
+        "variety": "3",
+        "anime": "4"
+      }
+    },
+    {
+      "name": "老鸭资源",
+      "base_url": "https://api.apilyzy.com",
+      "category_map": {
+        "movie": "1",
+        "tv": "2",
+        "variety": "3",
+        "anime": "4"
+      }
+    },
+    {
+      "name": "草榴资源",
+      "base_url": "https://www.caoliuzyw.com",
+      "category_map": {
+        "movie": "1",
+        "tv": "2",
+        "variety": "3",
+        "anime": "4"
+      }
+    },
+    {
+      "name": "最色资源",
+      "base_url": "https://zszyw.top",
+      "category_map": {
+        "movie": "1",
+        "tv": "2",
+        "variety": "3",
+        "anime": "4"
+      }
+    },
+    {
+      "name": "成人影视4",
+      "base_url": "https://apittzy.com",
+      "category_map": {
+        "movie": "1",
+        "tv": "2",
+        "variety": "3",
+        "anime": "4"
+      }
+    },
+    {
+      "name": "成人16",
+      "base_url": "https://api.maozyapi.com",
+      "category_map": {
+        "movie": "1",
+        "tv": "2",
+        "variety": "3",
+        "anime": "4"
+      }
+    },
+    {
+      "name": "色南国资源",
+      "base_url": "https://api.sexnguon.com",
+      "category_map": {
+        "movie": "1",
+        "tv": "2",
+        "variety": "3",
+        "anime": "4"
+      }
+    },
+    {
+      "name": "色猫资源",
+      "base_url": "https://caiji.semaozy.net",
+      "category_map": {
+        "movie": "1",
+        "tv": "2",
+        "variety": "3",
+        "anime": "4"
+      }
+    }
+  ]
+}

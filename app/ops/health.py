@@ -100,7 +100,59 @@ def _check_inner(src):
     return name, ok, latency, error
 
 
-def run_health_check(sources=None, force: bool = True) -> dict:
+def _measure_source_speed(src):
+    """深度健康检查：取该源电影分类第一条，解析真实播放地址并实测 CDN 缓冲速度。"""
+    name = getattr(src, "name", "unknown")
+    try:
+        if hasattr(src, "list_page"):
+            items = src.list_page("movie", 1, 5)
+        else:
+            items = src.get_list_page("movie", 1, 5)
+        item = next((it for it in items if it.get("source_url")), None)
+        if not item:
+            return name, None
+        url = src.get_play_url(item.get("source_url", ""))
+        if not url or not str(url).startswith(("http://", "https://")):
+            return name, None
+        from app.source_selector import measure_source
+        profile = getattr(src, "header_profile", None) or {}
+        m = measure_source(str(url), profile.get("referer", ""), False,
+                           profile or {}, profile.get("ua"))
+        return name, m.get("speed_kbs")
+    except Exception:
+        return name, None
+
+
+def _update_speed(name: str, speed_kbs):
+    with _LOCK:
+        data = _read()
+        entry = data.setdefault(name, {
+            "state": "untested", "fails": 0, "oks": 0,
+            "latency_ms": None, "checked_at": None, "last_error": "",
+        })
+        entry["speed_kbs"] = speed_kbs
+        entry["priority"] = int(speed_kbs or 0)
+        entry["speed_at"] = time.time()
+        _write(data)
+
+
+def source_priority(name: str) -> int:
+    """源优先级：主要由实测 CDN 缓冲速度决定（速度越快优先级越高）。"""
+    return int(_read().get(name, {}).get("priority") or 0)
+
+
+def sorted_by_priority(sources: list) -> list:
+    """按优先级排序（高优先在前；同优先级按延迟，未测的最后）。"""
+    data = _read()
+    def key(s):
+        h = data.get(getattr(s, "name", ""), {})
+        return (-int(h.get("priority") or 0),
+                h.get("latency_ms") if h.get("latency_ms") is not None else 999999,
+                getattr(s, "name", ""))
+    return sorted(sources, key=key)
+
+
+def run_health_check(sources=None, force: bool = True, deep: bool = True) -> dict:
     """并行检查所有源，更新状态文件。返回摘要。"""
     if sources is not None:
         src_list = list(sources)
@@ -139,6 +191,23 @@ def run_health_check(sources=None, force: bool = True) -> dict:
         pass
     finally:
         pool.shutdown(wait=False)
+    # 深度检查：实测每个源的 CDN 缓冲速度并更新优先级（后台，慢源不阻塞）
+    if deep and src_list:
+        speed_pool = ThreadPoolExecutor(max_workers=6)
+        speed_futs = [speed_pool.submit(_measure_source_speed, s) for s in src_list]
+        try:
+            for f in as_completed(speed_futs, timeout=240):
+                try:
+                    name, speed = f.result(timeout=1)
+                except Exception:
+                    continue
+                if speed:
+                    _update_speed(name, speed)
+                    summary["sources"].append({"name": name, "speed_kbs": speed})
+        except Exception:
+            pass
+        finally:
+            speed_pool.shutdown(wait=False)
     logger.info(f"健康检查完成: 检查 {summary['checked']}, 正常 {summary['ok']}, 隔离 {summary['dead']}")
     return summary
 

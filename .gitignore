@@ -6,7 +6,6 @@ data/media.db
 data/media.db-shm
 data/media.db-wal
 data/douban_cache.json
-data/adult_config.json
 data/source_speed_cache.json
 data/source_health.json
 data/parse_sources.json
