@@ -527,7 +527,7 @@ def api_ops_status():
     return get_status()
 
 
-@app.post("/api/ops/run-health-check")
+@app.api_route("/api/ops/run-health-check", methods=["GET", "POST"])
 def api_ops_run_health_check():
     """手动触发全量源健康检查（后台执行）。"""
     from app.ops.health import run_health_check
@@ -536,7 +536,7 @@ def api_ops_run_health_check():
     return {"success": True, "message": "健康检查已在后台启动"}
 
 
-@app.post("/api/ops/sync-now")
+@app.api_route("/api/ops/sync-now", methods=["GET", "POST"])
 def api_ops_sync_now():
     """手动触发社区 TVBox 订阅同步（后台执行）。"""
     from app.ops.sync import sync_now
@@ -573,7 +573,7 @@ def api_drpy_status():
     }
 
 
-@app.post("/api/drpy/refresh")
+@app.api_route("/api/drpy/refresh", methods=["GET", "POST"])
 def api_drpy_refresh():
     """强制刷新 drpyS 源注册表（后台执行）。"""
     from app.source_framework.drpy_source import refresh_registry
@@ -591,7 +591,7 @@ def api_drpy_refresh():
     return {"success": True, "message": "drpyS 源注册表刷新已启动"}
 
 
-@app.post("/api/drpy/backfill")
+@app.api_route("/api/drpy/backfill", methods=["GET", "POST"])
 def api_drpy_backfill(
     pages: int = Query(default=2, ge=1, le=10, description="每个分类回填页数"),
 ):
@@ -635,7 +635,7 @@ def api_crawl_status():
     return get_crawl_status()
 
 
-@app.post("/api/crawl/trigger")
+@app.api_route("/api/crawl/trigger", methods=["GET", "POST"])
 def api_trigger_crawl():
     """手动触发爬取"""
     import threading
@@ -765,14 +765,14 @@ def api_maccms_save(
     return {"success": True, "message": f"源 '{name}' 已保存，请触发爬取以获取数据"}
 
 
-@app.post("/api/maccms/update-remote")
+@app.api_route("/api/maccms/update-remote", methods=["GET", "POST"])
 def api_maccms_update_remote():
     """从远程仓库拉取最新视频源配置并热加载（快速换源）"""
     from app.source_updater import update_sources_from_remote
     return update_sources_from_remote()
 
 
-@app.post("/api/douban/sync")
+@app.api_route("/api/douban/sync", methods=["GET", "POST"])
 def api_douban_sync():
     """手动同步豆瓣热播榜到本地（匹配入库 + 回填评分，后台执行）"""
     from app.douban import sync_douban_hot
@@ -818,7 +818,7 @@ def api_config():
     }
 
 
-@app.post("/api/adult/sync")
+@app.api_route("/api/adult/sync", methods=["GET", "POST"])
 def api_adult_sync():
     """手动触发成人内容轻量回填（后台执行）"""
     from app.adult import sync_adult_content
