@@ -37,10 +37,16 @@ let _lines = [];               // 播放链候选线路（play-lines）
 let _lineIndex = -1;           // 当前线路下标
 let _linesLoaded = false;      // 本次播放会话是否已拉取播放链
 let _linesPromise = null;      // 播放链拉取中的 Promise（去重 + 供按钮等待）
-let _linesRefreshTimer = null; // 播放链延迟刷新定时器（等待后台跨源补充）
-let _autoLineSwitched = false; // 本次播放会话是否已自动切到更快线路
-let _linesRefreshCount = 0;    // 播放链延迟刷新次数（最多3轮，等后台跨源补充完成）
-let _stallTimer = null;        // 卡顿自动换线定时器
+let _linesRevision = 0;          // 服务端播放链 revision（轮询增量）
+let _linesPollTimer = null;      // 播放中 8 秒轮询定时器
+let _buffering = false;          // 去重：是否正处于缓冲中
+let _hasPlayed = false;          // 当前线路是否已开始播放（加载期不算卡顿）
+let _bufferCount = 0;            // 当前线路缓冲次数（累计 3 次立即切换）
+let _proactiveSwitchCount = 0;   // 主动慢速切换次数（每会话最多 2 次）
+let _lastProactiveSwitchAt = 0;  // 主动切换冷却时间戳（30 秒）
+let _slowSince = 0;              // 当前线路持续低速起始时间戳
+let _lastSeekAt = 0;             // 最近一次 seek 时间（快进后的缓冲不计入 3 次计数）
+let _stallTimer = null;          // 卡顿自动换线定时器
 let _srcStatusAt = 0;          // 源状态最近刷新时间
 
 function esc(s) {
@@ -610,45 +616,65 @@ function toggleDiagPanel() {
 
 function bindBufferEvents(video) {
   video.addEventListener("loadstart", () => showBufferOSD("加载中…"));
-  video.addEventListener("waiting", () => {
-    if (!_bufferSince) _bufferSince = Date.now();
-    startStallTimer();
-    showBufferOSD();
-  });
-  video.addEventListener("stalled", () => {
-    if (!_bufferSince) _bufferSince = Date.now();
-    startStallTimer();
-    showBufferOSD();
+  const onBufferStart = () => {
+    if (!_buffering) {
+      _buffering = true;
+      _bufferSince = Date.now();
+      showBufferOSD();
+      // 首进/换线加载期尚未真正开始播放：不算卡顿，交给加载超时兜底
+      if (!_hasPlayed) return;
+      // 快进后的缓冲是正常现象：不计入 3 次计数（单次超过 8 秒仍按卡顿切换）
+      if (Date.now() - _lastSeekAt < 5000) {
+        startStallTimer();
+        return;
+      }
+      _bufferCount++;
+      // 同一线路累计第 3 次缓冲：立即切换到最快线路，不再等待
+      if (_bufferCount >= 3) {
+        clearStallTimer();
+        switchToFastestLine("检测到多次缓冲");
+        return;
+      }
+      startStallTimer();
+    }
+  };
+  video.addEventListener("waiting", onBufferStart);
+  video.addEventListener("stalled", onBufferStart);
+  // 快进/拖动进度：重置缓冲计数，seek 后的缓冲按正常加载对待
+  video.addEventListener("seeking", () => {
+    _lastSeekAt = Date.now();
+    _bufferCount = 0;
   });
   const endBuffer = () => {
     hideBufferOSD();
     clearLoadTimer();
     clearStallTimer();
+    _buffering = false;
     if (_bufferSince) {
       recordBufferEvent((Date.now() - _bufferSince) / 1000);
       _bufferSince = 0;
     }
   };
-  video.addEventListener("playing", endBuffer);
+  const onPlayed = () => {
+    _hasPlayed = true;   // 真正开始播放后才启用卡顿判定
+    endBuffer();
+  };
+  video.addEventListener("playing", onPlayed);
   video.addEventListener("canplay", endBuffer);
 }
 
-// 卡顿超过 12 秒且播放链有备用线路时，自动切换线路
+// 单次缓冲连续 8 秒：立即切换到当前已知最快的线路（无则回退原兜底逻辑）
 function startStallTimer() {
   clearStallTimer();
   _stallTimer = setTimeout(() => {
     _stallTimer = null;
     const video = document.getElementById("tv-video");
     if (!video || video.paused || video.ended) return;
-    if (!_bufferSince) return;
-    if (Date.now() - _bufferSince < 12000) return;
-    nextLine(_playId, _playEp).then(switched => {
-      if (!switched) {
-        // 无备用线路：保留现有兜底逻辑
-        if (_hlsRetryCount >= 3) trySwitchSource(_playId, _playEp);
-      }
-    });
-  }, 12000);
+    if (!_buffering || !_bufferSince) return;
+    if (Date.now() - _bufferSince < 8000) return;
+    // 只有一条线路时 switchToFastestLine 返回 false，这里不做任何切换（等待恢复）
+    switchToFastestLine("检测到卡顿");
+  }, 8000);
 }
 
 function clearStallTimer() {
@@ -671,11 +697,11 @@ function startLoadTimer(video) {
       loadAndPlayUrl(_playId, _playEp);
     } else {
       markCurrentLineFailed("加载超时");
-      nextLine(_playId, _playEp).then(switched => {
+      switchToFastestLine("加载超时").then(switched => {
         if (!switched) trySwitchSource(_playId, _playEp);
       });
     }
-  }, 20000);
+  }, 15000);
 }
 
 // 切换线路/重试前记住当前播放位置，新线路加载后自动跳回
@@ -718,9 +744,13 @@ async function openPlayerAndPlay(videoId, episode, startSeconds) {
   _lineIndex = -1;
   _linesLoaded = false;
   _linesPromise = null;
-  _autoLineSwitched = false;
-  _linesRefreshCount = 0;
-  clearLineRefreshTimer();
+  _linesRevision = 0;
+  _bufferCount = 0;
+  _buffering = false;
+  _proactiveSwitchCount = 0;
+  _lastProactiveSwitchAt = 0;
+  _slowSince = 0;
+  stopLinePolling();
   clearStallTimer();
   clearLoadTimer();
 
@@ -787,9 +817,13 @@ async function switchEpisode(dir) {
   _lineIndex = -1;
   _linesLoaded = false;
   _linesPromise = null;
-  _autoLineSwitched = false;
-  _linesRefreshCount = 0;
-  clearLineRefreshTimer();
+  _linesRevision = 0;
+  _bufferCount = 0;
+  _buffering = false;
+  _proactiveSwitchCount = 0;
+  _lastProactiveSwitchAt = 0;
+  _slowSince = 0;
+  stopLinePolling();
   clearStallTimer();
   // 同步请求全屏（保留按键手势激活），未在全屏时进入全屏
   const stage = document.getElementById("player-stage");
@@ -851,6 +885,12 @@ async function loadAndPlayUrl(videoId, episode, overrideUrl, overrideSource) {
     _speedSamples = [];
     _lastSpeed = 0;
     _bufferSince = 0;
+    _buffering = false;
+    _hasPlayed = false;
+    _bufferCount = 0;
+    _slowSince = 0;
+    _lastSeekAt = 0;
+    clearStallTimer();
     _hlsBytes = 0;
     _probeInfo = null;
     _lastHlsError = "";
@@ -924,7 +964,7 @@ async function loadAndPlayUrl(videoId, episode, overrideUrl, overrideSource) {
           setTimeout(() => { try { hls.startLoad(); } catch (e) {} }, 1500);
         } else {
           markCurrentLineFailed(_lastHlsError || "网络错误");
-          nextLine(_playId, _playEp).then(switched => {
+          switchToFastestLine("网络错误").then(switched => {
             if (!switched) trySwitchSource(_playId, _playEp);
           });
         }
@@ -945,13 +985,14 @@ async function loadAndPlayUrl(videoId, episode, overrideUrl, overrideSource) {
     startLoadTimer(video);
     // 异步源站测速（拉清单+首分片），不阻塞播放
     probeSource(data.play_url, data.referer || "");
-    // 播放链：预取全部候选线路（后台），失败/卡顿时自动切换
+    // 播放链：预取全部候选线路（后台），失败/卡顿时自动切换；播放中持续轮询补充
     if (!overrideUrl) {
       if (!_linesLoaded) fetchPlayLines(videoId, episode);
       if (!_lines.length && !_linesLoaded) tryBestSource(videoId, episode, data.play_url);
     } else {
       updateLineButton();
     }
+    startLinePolling(videoId, episode);
   } catch (e) {
     _playFailed = true;
     markCurrentLineFailed("网络请求失败");
@@ -1047,54 +1088,35 @@ function linePlayUrl(line) {
 
 async function fetchPlayLines(videoId, episode, forceRefresh) {
   if (_linesLoaded && !forceRefresh) return;
-  clearLineRefreshTimer();
   // 已有正在拉取的请求则复用，避免重复请求
-  if (_linesPromise && !forceRefresh) return _linesPromise;
+  if (_linesPromise) return _linesPromise;
   _linesPromise = (async () => {
     try {
+      const sr = _linesRevision ? "&since_revision=" + _linesRevision : "";
       const res = await fetch("/api/video/" + videoId + "/play-lines" +
-        (episode ? "?episode=" + episode : ""));
+        (episode ? "?episode=" + episode : "") + sr);
       const data = await res.json();
       _linesLoaded = true;
-      _lines = ((data && data.lines) || []).filter(l => l && l.play_url);
-      _lineIndex = -1;
-      for (let i = 0; i < _lines.length; i++) {
-        if (_lines[i].current || _lines[i].play_url === _currentUrl) { _lineIndex = i; break; }
+      const changed = data.changed !== false;
+      if (changed && Array.isArray(data.lines)) {
+        _lines = data.lines.filter(l => l && l.play_url);
+        _lineIndex = -1;
+        for (let i = 0; i < _lines.length; i++) {
+          const l = _lines[i];
+          if (l.current || l.play_url === _currentUrl || linePlayUrl(l) === _currentUrl) {
+            _lineIndex = i;
+            break;
+          }
+        }
       }
+      if (typeof data.revision === "number") _linesRevision = data.revision;
       updateLineButton();
       // 播放链不足时，继续用旧的 best-source 后台补充（跨源搜索候选）
       if (_lines.length <= 1 && !_altSources.length && !_playFailed) {
         tryBestSource(videoId, episode, _currentUrl);
       }
-      // 当前源明显更慢时，自动切到播放链里最快的线路（每会话只自动切一次）
-      if (!_autoLineSwitched && _lines.length > 1 && !_playFailed) {
-        const best = _lines.find(l => l && l.speed_kbs && !l.error);
-        if (best && best.play_url && best.play_url !== _currentUrl) {
-          const curSpeed = _lastSpeed;
-          const better = best.speed_kbs > 150 && (!curSpeed || best.speed_kbs > curSpeed * 1.5);
-          if (better) {
-            _autoLineSwitched = true;
-            showBufferOSD("已自动切换到更快线路 " + (best.source || ""));
-            keepPlaybackPosition();
-            loadAndPlayUrl(videoId, episode, linePlayUrl(best), best.source);
-            return;
-          }
-        }
-      }
-      // 后台跨源补充需要几秒，稍后再拉一次让新线路进入列表
-      if (!forceRefresh) {
-        _linesRefreshTimer = setTimeout(() => {
-          _linesRefreshTimer = null;
-          fetchPlayLines(videoId, episode, true);
-        }, 14000);
-      } else if (_linesRefreshCount < 3 && _lines.length <= 4) {
-        // 跨源补充最多需 50 秒左右，每 22 秒再刷新一轮
-        _linesRefreshCount++;
-        _linesRefreshTimer = setTimeout(() => {
-          _linesRefreshTimer = null;
-          fetchPlayLines(videoId, episode, true);
-        }, 22000);
-      }
+      // 有更新且播放顺畅时，检查是否需要主动切到更快线路（策略 B）
+      if (changed && !_playFailed) maybeProactiveSwitch();
     } catch (e) {
       // 播放链获取失败时回退到旧的 best-source 兜底
       tryBestSource(videoId, episode, _currentUrl);
@@ -1105,8 +1127,17 @@ async function fetchPlayLines(videoId, episode, forceRefresh) {
   return _linesPromise;
 }
 
-function clearLineRefreshTimer() {
-  if (_linesRefreshTimer) { clearTimeout(_linesRefreshTimer); _linesRefreshTimer = null; }
+// 播放中每 8 秒轮询一次播放链（服务端 revision 增量，无变化零开销）
+function startLinePolling(videoId, episode) {
+  stopLinePolling();
+  _linesPollTimer = setInterval(() => {
+    if (_currentView !== "player" || _playId !== videoId || _playEp !== episode) return;
+    fetchPlayLines(_playId, _playEp, true);
+  }, 8000);
+}
+
+function stopLinePolling() {
+  if (_linesPollTimer) { clearInterval(_linesPollTimer); _linesPollTimer = null; }
 }
 
 function updateLineButton() {
@@ -1186,7 +1217,7 @@ async function cycleLine() {
     const j = (idx + i) % _lines.length;
     const line = _lines[j];
     if (!line || line.error) continue;
-    if (line.play_url === _currentUrl) continue;
+    if (line.play_url === _currentUrl || linePlayUrl(line) === _currentUrl) continue;
     _lineIndex = j;
     _hlsRetryCount = 0;
     showBufferOSD("已切换线路 " + (line.source || "未知") +
@@ -1207,7 +1238,7 @@ async function nextLine(videoId, episode) {
     const j = (idx + i) % _lines.length;
     const line = _lines[j];
     if (!line || line.error) continue;
-    if (line.play_url === _currentUrl) continue;
+    if (line.play_url === _currentUrl || linePlayUrl(line) === _currentUrl) continue;
     _lineIndex = j;
     _hlsRetryCount = 0;
     showBufferOSD("当前线路不可用，切换到 " + (line.source || "备用线路"));
@@ -1216,6 +1247,55 @@ async function nextLine(videoId, episode) {
     return true;
   }
   return false;
+}
+
+// 卡顿/失败时直接切换到当前已知最快的可用线路（零等待），无则回退 nextLine
+async function switchToFastestLine(reason) {
+  // 只有一条线路（或没有其他可用线路）时不做任何切换，等待恢复/失败回退
+  if (!_lines.length) return false;
+  const usable = _lines.filter(l => l && l.play_url && !l.error &&
+    l.play_url !== _currentUrl && linePlayUrl(l) !== _currentUrl);
+  if (!usable.length) return false;
+  const best = usable.reduce((a, b) => ((b.speed_kbs || 0) > (a.speed_kbs || 0) ? b : a));
+  _lineIndex = _lines.indexOf(best);
+  _hlsRetryCount = 0;
+  _bufferCount = 0;
+  _buffering = false;
+  clearStallTimer();
+  showBufferOSD((reason || "检测到卡顿") + "，已切换到最快线路 " + (best.source || "") +
+    (best.speed_kbs ? " · " + Math.round(best.speed_kbs) + " KB/s" : ""));
+  keepPlaybackPosition();
+  await loadAndPlayUrl(_playId, _playEp, linePlayUrl(best), best.source);
+  return true;
+}
+
+// 策略 B：播放顺畅但当前线路持续 <150KB/s 且最快线路 >2 倍时主动切换（每会话最多 2 次，30 秒冷却）
+function maybeProactiveSwitch() {
+  if (_playFailed || _buffering || _bufferSince > 0) return false;
+  if (_proactiveSwitchCount >= 2) return false;
+  if (Date.now() - _lastProactiveSwitchAt < 30000) return false;
+  const curSpeed = _lastSpeed; // bytes/s
+  if (!(curSpeed > 0) || curSpeed >= 150 * 1024) { _slowSince = 0; return false; }
+  const now = Date.now();
+  if (!_slowSince) _slowSince = now;
+  if (now - _slowSince < 10000) return false; // 持续低速 10 秒才触发
+  const usable = _lines.filter(l => l && l.play_url && !l.error &&
+    l.play_url !== _currentUrl && linePlayUrl(l) !== _currentUrl);
+  if (!usable.length) return false;
+  const best = usable.reduce((a, b) => ((b.speed_kbs || 0) > (a.speed_kbs || 0) ? b : a));
+  if (!(best.speed_kbs > 0)) return false;
+  if (!(best.speed_kbs * 1024 > curSpeed * 2)) { _slowSince = now; return false; }
+  _proactiveSwitchCount++;
+  _lastProactiveSwitchAt = now;
+  _slowSince = 0;
+  _bufferCount = 0;
+  _buffering = false;
+  clearStallTimer();
+  showBufferOSD("已切换到更快线路 " + (best.source || "") +
+    (best.speed_kbs ? " · " + Math.round(best.speed_kbs) + " KB/s" : ""));
+  keepPlaybackPosition();
+  loadAndPlayUrl(_playId, _playEp, linePlayUrl(best), best.source);
+  return true;
 }
 
 function updatePlayerButtons() {
@@ -1301,9 +1381,13 @@ function stopPlayerInternal(saveProgressNow) {
   _lineIndex = -1;
   _linesLoaded = false;
   _linesPromise = null;
-  _autoLineSwitched = false;
-  _linesRefreshCount = 0;
-  clearLineRefreshTimer();
+  _linesRevision = 0;
+  _bufferCount = 0;
+  _buffering = false;
+  _proactiveSwitchCount = 0;
+  _lastProactiveSwitchAt = 0;
+  _slowSince = 0;
+  stopLinePolling();
   clearStallTimer();
   if (_diagVisible) { _diagVisible = false; const p = document.getElementById("diag-panel"); if (p) p.classList.add("hidden"); }
   if (_diagTimer) { clearInterval(_diagTimer); _diagTimer = null; }

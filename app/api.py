@@ -121,12 +121,21 @@ def api_search(
     include_adult = is_enabled()
 
     # 1. 本地搜索（秒出）
+    from app.database import is_commentary_title
     local_results, _ = search_videos(q, 1, 9999, include_adult=include_adult)
     local_seen = {r["source_url"] for r in local_results}
 
     # 2. 并行远程搜索
     from app.source_framework.registry import get_search_sources
     sources = get_search_sources()
+    # alist-tvbox 独立线程执行：避免排在 100+ 个源后面被整体超时饿死
+    from app.source_framework.alist_tvbox_adapter import get_source as get_atv_source
+    atv_src = get_atv_source()
+    sources = [s for s in sources if s.name != getattr(atv_src, "name", "__none__")]
+    atv_future = None
+    if atv_src is not None:
+        atv_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        atv_future = atv_pool.submit(atv_src.search, q, SEARCH_TIMEOUT + 2)
     remote_items = []
 
     if sources:
@@ -139,6 +148,8 @@ def api_search(
                 try:
                     items = f.result(timeout=max(0, deadline - time.time()))
                     for item in items:
+                        if is_commentary_title(item.get("title")):
+                            continue
                         su = item.get("source_url", "")
                         if su and su not in local_seen:
                             local_seen.add(su)
@@ -153,6 +164,21 @@ def api_search(
             # 不等待未完成任务（慢源由后台自行结束），避免搜索接口卡住
             pool.shutdown(wait=False)
         logger.info(f"搜索「{q}」: 本地 {len(local_results)} 条 + 远程 {len(remote_items)} 条")
+
+    # alist-tvbox 结果合并（独立线程，不受共享池排队影响）
+    if atv_future is not None:
+        try:
+            for item in atv_future.result(timeout=SEARCH_TIMEOUT + 4):
+                if is_commentary_title(item.get("title")):
+                    continue
+                su = item.get("source_url", "")
+                if su and su not in local_seen:
+                    local_seen.add(su)
+                    remote_items.append(item)
+        except Exception as e:
+            logger.warning(f"alist-tvbox 搜索失败: {e}")
+        finally:
+            atv_pool.shutdown(wait=False)
 
     # 3. 远程结果入库（获得真实 id）
     for item in remote_items:
@@ -436,10 +462,11 @@ def api_video_play_lines(
     video_id: int,
     episode: int = Query(default=None, description="剧集编号"),
     refresh: bool = Query(default=False, description="强制重新测速"),
+    since_revision: int = Query(default=None, description="前端已知的播放链 revision，无变化时轻量返回"),
 ):
     """播放链：同一视频在所有启用源中的候选线路（测速排序），前端播放失败/卡顿自动切换。"""
     from app.source_framework.play_lines import get_play_lines
-    return get_play_lines(video_id, episode, refresh=refresh)
+    return get_play_lines(video_id, episode, refresh=refresh, since_revision=since_revision)
 
 
 @app.get("/api/probe")
@@ -680,6 +707,17 @@ def api_sources():
         }
         for s in get_registry().get_all()
     ]
+    from app.source_framework.alist_tvbox_adapter import get_source as get_atv_source
+    atv = get_atv_source()
+    if atv is not None:
+        drpy_sources.append({
+            "name": atv.name,
+            "base_url": atv.base_url,
+            "enabled": True,
+            "type": "alist_tvbox",
+            "adult": False,
+            "health": health.get(atv.name, {}),
+        })
     return {
         "sources": [
             {"name": s.name, "base_url": s.base_url, "enabled": s.enabled, "type": "html"}

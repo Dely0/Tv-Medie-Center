@@ -29,6 +29,68 @@ def _adult_exclude_sql(column: str = "videos") -> tuple[str, list]:
     return f" AND NOT {cond}", params
 
 
+# 电影/电视剧解说等二创内容关键词（用户明确不要，显示与入库全局排除）
+COMMENTARY_KEYWORDS = ("解说", "速看", "盘点", "混剪", "影评", "深度解析", "一口气看完")
+
+
+def is_commentary_title(title) -> bool:
+    """标题是否为解说/二创内容（电影解说、电视剧解说等）。"""
+    if not title:
+        return False
+    return any(k in str(title) for k in COMMENTARY_KEYWORDS)
+
+
+def _commentary_exclude_sql(column: str = "videos") -> tuple[str, list]:
+    """排除解说/二创内容的 SQL 片段与参数（无条件生效）。"""
+    if not COMMENTARY_KEYWORDS:
+        return "", []
+    cond = "(" + " OR ".join(f"{column}.title LIKE ?" for _ in COMMENTARY_KEYWORDS) + ")"
+    return f" AND NOT {cond}", [f"%{k}%" for k in COMMENTARY_KEYWORDS]
+
+
+def _item_better(a: dict, b: dict) -> bool:
+    """去重时判断 a 是否严格优于 b：先比分，再比更新时间。"""
+    sa = a.get("douban_score") or a.get("rating") or 0
+    sb = b.get("douban_score") or b.get("rating") or 0
+    if sa != sb:
+        return sa > sb
+    ta = a.get("updated_at") or a.get("watched_at") or ""
+    tb = b.get("updated_at") or b.get("watched_at") or ""
+    return ta > tb
+
+
+def _dedupe_items(items: list[dict]) -> list[dict]:
+    """按标准化标题去重：同标题只保留一个（重复源信息只在播放链路中体现）。"""
+    from app.douban import normalize_title
+    best = {}
+    order = []
+    for it in items:
+        key = normalize_title(it.get("title") or "")
+        if not key:
+            continue
+        cur = best.get(key)
+        if cur is None:
+            best[key] = it
+            order.append(key)
+        elif _item_better(it, cur):
+            best[key] = it
+    return [best[k] for k in order]
+
+
+def _dedupe_first(items: list[dict]) -> list[dict]:
+    """按标准化标题去重，保留第一条（调用方需按期望优先级排序）。"""
+    from app.douban import normalize_title
+    seen = set()
+    out = []
+    for it in items:
+        key = normalize_title(it.get("title") or "")
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(it)
+    return out
+
+
 def get_conn() -> sqlite3.Connection:
     """每个线程获取独立连接"""
     if not hasattr(_local, "conn") or _local.conn is None:
@@ -146,6 +208,7 @@ def _ensure_columns(db: sqlite3.Connection):
         "hits_week": "INTEGER DEFAULT 0",
         "douban_score": "REAL",
         "remarks": "TEXT",
+        "title_norm": "TEXT",
     }
     for col, ddl in columns.items():
         if col not in existing:
@@ -153,6 +216,20 @@ def _ensure_columns(db: sqlite3.Connection):
     db.execute("CREATE INDEX IF NOT EXISTS idx_videos_genre ON videos(genre)")
     db.execute("CREATE INDEX IF NOT EXISTS idx_videos_hits_week ON videos(hits_week)")
     db.execute("CREATE INDEX IF NOT EXISTS idx_videos_douban_score ON videos(douban_score)")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_videos_title_norm ON videos(title_norm)")
+    # 回填缺失的归一化标题（新增列后一次性补齐；失败不影响启动，后续 upsert 会补）
+    try:
+        from app.douban import normalize_title
+        missing = db.execute(
+            "SELECT id, title FROM videos WHERE title_norm IS NULL OR title_norm=''"
+        ).fetchall()
+        if missing:
+            db.executemany(
+                "UPDATE videos SET title_norm=? WHERE id=?",
+                [(normalize_title(r["title"]), r["id"]) for r in missing],
+            )
+    except Exception:
+        pass
 
 
 def _init_fts(db: sqlite3.Connection):
@@ -206,21 +283,26 @@ def _init_fts(db: sqlite3.Connection):
 def search_videos(keyword: str, page: int = 1, page_size: int = 30,
                   include_adult: bool = False) -> tuple[list[dict], int]:
     """搜索视频：trigram 支持中文子串；短词/特殊字符回退 LIKE。
-    include_adult=True 时（成人开关开启）允许返回成人内容，否则始终排除。"""
+    include_adult=True 时（成人开关开启）允许返回成人内容，否则始终排除。
+    显示层按归一化标题去重（跨源重复只保留一条），分页基于去重后的集合。"""
     offset = (page - 1) * page_size
     match_q = None
     with get_db() as db:
         total = 0
+        rows = []
         # trigram 至少需要 3 个字符，短词直接用 LIKE
         if len(keyword) >= 3:
             # 用短语查询避免关键字中的 FTS 运算符（引号、冒号等）导致语法错误
             match_q = '"' + keyword.replace('"', '""') + '"'
             try:
                 excl_sql, excl_params = ("" , []) if include_adult else _adult_exclude_sql("v")
+                cmt_sql, cmt_params = _commentary_exclude_sql("v")
                 count_row = db.execute(
-                    "SELECT COUNT(*) FROM videos_fts fts JOIN videos v ON v.id = fts.rowid "
-                    f"WHERE fts MATCH ?{excl_sql}",
-                    (match_q,) + tuple(excl_params)
+                    "SELECT COUNT(*) FROM ("
+                    "SELECT v.id FROM videos_fts fts JOIN videos v ON v.id = fts.rowid "
+                    f"WHERE fts MATCH ?{excl_sql}{cmt_sql} "
+                    "GROUP BY COALESCE(v.title_norm, v.title))",
+                    (match_q,) + tuple(excl_params) + tuple(cmt_params)
                 ).fetchone()
                 total = count_row[0] if count_row else 0
             except Exception:
@@ -229,26 +311,47 @@ def search_videos(keyword: str, page: int = 1, page_size: int = 30,
         if total > 0:
             rows = db.execute(
                 f"""
-                SELECT v.* FROM videos v, videos_fts fts
-                WHERE v.id = fts.rowid AND videos_fts MATCH ?{excl_sql}
-                ORDER BY v.updated_at DESC
+                WITH dedup AS (
+                  SELECT v.*, ROW_NUMBER() OVER (
+                    PARTITION BY COALESCE(v.title_norm, v.title)
+                    ORDER BY COALESCE(NULLIF(v.douban_score,0), NULLIF(v.rating,0)) DESC,
+                             v.updated_at DESC, v.id DESC
+                  ) AS _rn
+                  FROM videos v, videos_fts fts
+                  WHERE v.id = fts.rowid AND videos_fts MATCH ?{excl_sql}{cmt_sql}
+                )
+                SELECT * FROM dedup v WHERE v._rn = 1
+                ORDER BY v.updated_at DESC, v.id DESC
                 LIMIT ? OFFSET ?
-                """, (match_q,) + tuple(excl_params) + (page_size, offset)
+                """, (match_q,) + tuple(excl_params) + tuple(cmt_params) + (page_size, offset)
             ).fetchall()
         else:
             # FTS 不匹配（短词/特殊字符场景），用 LIKE 保底
             like = f"%{keyword}%"
             excl_sql, excl_params = ("", []) if include_adult else _adult_exclude_sql("videos")
+            cmt_sql, cmt_params = _commentary_exclude_sql("videos")
             count_row = db.execute(
-                f"SELECT COUNT(*) FROM videos WHERE (title LIKE ? OR description LIKE ? OR actors LIKE ? OR director LIKE ?){excl_sql}",
-                (like, like, like, like) + tuple(excl_params)
+                "SELECT COUNT(*) FROM ("
+                f"SELECT id FROM videos WHERE (title LIKE ? OR description LIKE ? OR actors LIKE ? OR director LIKE ?){excl_sql}{cmt_sql} "
+                "GROUP BY COALESCE(title_norm, title))",
+                (like, like, like, like) + tuple(excl_params) + tuple(cmt_params)
             ).fetchone()
             total = count_row[0] if count_row else 0
             rows = db.execute(
-                f"""SELECT * FROM videos
-                   WHERE (title LIKE ? OR description LIKE ? OR actors LIKE ? OR director LIKE ?){excl_sql}
-                   ORDER BY updated_at DESC LIMIT ? OFFSET ?""",
-                (like, like, like, like) + tuple(excl_params) + (page_size, offset)
+                f"""
+                WITH dedup AS (
+                  SELECT *, ROW_NUMBER() OVER (
+                    PARTITION BY COALESCE(title_norm, title)
+                    ORDER BY COALESCE(NULLIF(douban_score,0), NULLIF(rating,0)) DESC,
+                             updated_at DESC, id DESC
+                  ) AS _rn
+                  FROM videos
+                  WHERE (title LIKE ? OR description LIKE ? OR actors LIKE ? OR director LIKE ?){excl_sql}{cmt_sql}
+                )
+                SELECT * FROM dedup v WHERE v._rn = 1
+                ORDER BY v.updated_at DESC, v.id DESC LIMIT ? OFFSET ?
+                """,
+                (like, like, like, like) + tuple(excl_params) + tuple(cmt_params) + (page_size, offset)
             ).fetchall()
 
     return [dict(r) for r in rows], total
@@ -257,7 +360,7 @@ def search_videos(keyword: str, page: int = 1, page_size: int = 30,
 def get_videos_by_type(type_: str, page: int = 1, page_size: int = 30,
                        genre: str = "", area: str = "", year: str = "") -> tuple[list[dict], int]:
     """按类型分页查询；type_='recent' 按更新时间不分类型；type_='adult' 按成人源过滤；
-    genre/area/year 非空时按维度过滤"""
+    genre/area/year 非空时按维度过滤；显示层按归一化标题去重后分页。"""
     offset = (page - 1) * page_size
     conds, params = [], []
     if genre:
@@ -270,58 +373,74 @@ def get_videos_by_type(type_: str, page: int = 1, page_size: int = 30,
     with get_db() as db:
         if type_ == "recent":
             excl_sql, excl_params = _adult_exclude_sql()
+            cmt_sql, cmt_params = _commentary_exclude_sql()
             where_parts = list(conds)
             if excl_sql:
                 where_parts.append(excl_sql[5:])  # 去掉前导 " AND "
+            if cmt_sql:
+                where_parts.append(cmt_sql[5:])
             where = " WHERE " + " AND ".join(where_parts) if where_parts else ""
-            params_all = params + excl_params
-            count_row = db.execute(f"SELECT COUNT(*) FROM videos{where}", params_all).fetchone()
-            total = count_row[0] if count_row else 0
-            rows = db.execute(
-                f"SELECT * FROM videos{where} ORDER BY updated_at DESC LIMIT ? OFFSET ?",
-                params_all + [page_size, offset]
-            ).fetchall()
+            params_all = params + excl_params + cmt_params
+            # 最近更新按入库 id 倒序：避免爬虫持续刷新 updated_at 导致翻页抖动/跨页重复
+            order_by = "ORDER BY v.id DESC"
+            extra = []
         elif type_ == "adult":
             from app.adult import adult_cond_sql
             cond, cond_params = adult_cond_sql("videos")
             if not cond:
                 return [], 0
+            cmt_sql, cmt_params = _commentary_exclude_sql("videos")
             # 成人页 = 全量成人源内容 + 所有普通源中标题命中成人关键词的内容
             conds_all = [cond] + conds
-            params_all = list(cond_params) + params
+            if cmt_sql:
+                conds_all.append(cmt_sql[5:])
+            params_all = list(cond_params) + params + cmt_params
             where = " WHERE " + " AND ".join(conds_all)
-            count_row = db.execute(f"SELECT COUNT(*) FROM videos{where}", params_all).fetchone()
-            total = count_row[0] if count_row else 0
             order_by = (
                 "ORDER BY "
-                "(EXISTS(SELECT 1 FROM douban_ranks r WHERE r.video_id = videos.id)) DESC, "
-                "COALESCE(NULLIF(douban_score,0), NULLIF(rating,0)) DESC, "
-                "updated_at DESC"
+                "(EXISTS(SELECT 1 FROM douban_ranks r WHERE r.video_id = v.id)) DESC, "
+                "COALESCE(NULLIF(v.douban_score,0), NULLIF(v.rating,0)) DESC, "
+                "v.updated_at DESC, v.id DESC"
             )
-            rows = db.execute(
-                f"SELECT * FROM videos{where} {order_by} LIMIT ? OFFSET ?",
-                params_all + [page_size, offset]
-            ).fetchall()
+            extra = []
         else:
             conds_all = ["type=?"] + conds
             excl_sql, excl_params = _adult_exclude_sql()
+            cmt_sql, cmt_params = _commentary_exclude_sql()
             if excl_sql:
                 conds_all.append(excl_sql[5:])  # 去掉前缀 " AND "
-            params_all = [type_] + params + excl_params
+            if cmt_sql:
+                conds_all.append(cmt_sql[5:])
+            params_all = [type_] + params + excl_params + cmt_params
             where = " WHERE " + " AND ".join(conds_all)
-            count_row = db.execute(f"SELECT COUNT(*) FROM videos{where}", params_all).fetchone()
-            total = count_row[0] if count_row else 0
             order_by = (
                 "ORDER BY "
-                "(EXISTS(SELECT 1 FROM douban_ranks r WHERE r.video_id = videos.id AND r.category = ?)) DESC, "
-                "CASE WHEN source_url LIKE 'drpy://%' THEN 1 ELSE 0 END DESC, "
-                "COALESCE(NULLIF(douban_score,0), NULLIF(rating,0)) DESC, "
-                "updated_at DESC"
+                "(EXISTS(SELECT 1 FROM douban_ranks r WHERE r.video_id = v.id AND r.category = ?)) DESC, "
+                "CASE WHEN v.source_url LIKE 'drpy://%' THEN 1 ELSE 0 END DESC, "
+                "COALESCE(NULLIF(v.douban_score,0), NULLIF(v.rating,0)) DESC, "
+                "v.updated_at DESC, v.id DESC"
             )
-            rows = db.execute(
-                f"SELECT * FROM videos{where} {order_by} LIMIT ? OFFSET ?",
-                params_all + [type_] + [page_size, offset]
-            ).fetchall()
+            extra = [type_]
+
+        count_row = db.execute(
+            f"SELECT COUNT(*) FROM (SELECT id FROM videos{where} GROUP BY COALESCE(title_norm, title))",
+            params_all
+        ).fetchone()
+        total = count_row[0] if count_row else 0
+        rows = db.execute(
+            f"""
+            WITH dedup AS (
+              SELECT *, ROW_NUMBER() OVER (
+                PARTITION BY COALESCE(title_norm, title)
+                ORDER BY COALESCE(NULLIF(douban_score,0), NULLIF(rating,0)) DESC,
+                         updated_at DESC, id DESC
+              ) AS _rn
+              FROM videos{where}
+            )
+            SELECT * FROM dedup v WHERE v._rn = 1 {order_by} LIMIT ? OFFSET ?
+            """,
+            params_all + extra + [page_size, offset]
+        ).fetchall()
     return [dict(r) for r in rows], total
 
 
@@ -475,6 +594,9 @@ def get_home_data() -> dict:
     with get_db() as db:
         hero = _get_home_hero(db)
         seen = set()
+        seen_titles = set()
+
+        from app.douban import normalize_title
 
         # 先按“保留优先级”占用去重集合（榜单优先，避免被其他栏目挤掉），再按展示顺序输出
         def take(rows, limit=20):
@@ -482,9 +604,16 @@ def get_home_data() -> dict:
             for r in rows:
                 if len(items) >= limit:
                     break
+                if is_commentary_title(r["title"]):
+                    continue
                 if r["id"] in seen:
                     continue
+                key = normalize_title(r["title"])
+                if key and key in seen_titles:
+                    continue
                 seen.add(r["id"])
+                if key:
+                    seen_titles.add(key)
                 items.append(dict(r))
             return items
 
@@ -549,15 +678,16 @@ def get_home_data() -> dict:
 def _get_home_hero(db) -> dict | None:
     """最近观看记录（有进度）作为继续观看；否则取最近更新精选"""
     excl_sql, excl_params = _adult_exclude_sql("v")
+    cmt_sql, cmt_params = _commentary_exclude_sql("v")
     row = db.execute(
         f"""SELECT h.video_id, h.episode_id, h.progress_seconds, h.total_seconds,
                   v.title, v.cover, v.type
            FROM watch_history h
            JOIN videos v ON v.id = h.video_id
-           WHERE 1=1{excl_sql}
+           WHERE 1=1{excl_sql}{cmt_sql}
            ORDER BY h.watched_at DESC, h.id DESC
            LIMIT 1""",
-        excl_params
+        excl_params + cmt_params
     ).fetchone()
     if row and (row["progress_seconds"] or 0) > 0:
         episode_num = row["episode_id"]
@@ -582,9 +712,10 @@ def _get_home_hero(db) -> dict | None:
 
     # 备用查询没有表别名，必须用默认列名 videos 重新生成排除条件
     recent_excl, recent_params = _adult_exclude_sql()
+    recent_cmt, recent_cmt_params = _commentary_exclude_sql()
     recent = db.execute(
-        f"SELECT * FROM videos WHERE cover != ''{recent_excl} ORDER BY updated_at DESC LIMIT 1",
-        recent_params
+        f"SELECT * FROM videos WHERE cover != ''{recent_excl}{recent_cmt} ORDER BY updated_at DESC LIMIT 1",
+        recent_params + recent_cmt_params
     ).fetchone()
     if recent:
         return {
@@ -616,27 +747,28 @@ def get_recommendations(limit: int = 8) -> list[dict]:
     最终带“当日种子”轮换（当天稳定，次日变化）。
     """
     excl_sql, excl_params = _adult_exclude_sql("v")
+    cmt_sql, cmt_params = _commentary_exclude_sql("v")
     with get_db() as db:
         rows = db.execute(
             f"""SELECT v.* FROM recommend_pool p
                JOIN videos v ON v.id = p.video_id
-               WHERE p.video_id NOT IN (SELECT video_id FROM watch_history){excl_sql}
+               WHERE p.video_id NOT IN (SELECT video_id FROM watch_history){excl_sql}{cmt_sql}
                ORDER BY p.score DESC, p.updated_at DESC
                LIMIT 200""",
-            excl_params
+            excl_params + cmt_params
         ).fetchall()
         items = [dict(r) for r in rows]
         if not items:
             rows = db.execute(
                 f"""SELECT v.* FROM douban_ranks r
                    JOIN videos v ON v.id = r.video_id
-                   WHERE r.score > 0{excl_sql}
+                   WHERE r.score > 0{excl_sql}{cmt_sql}
                    ORDER BY r.score DESC, r.rank ASC
                    LIMIT 150""",
-                excl_params
+                excl_params + cmt_params
             ).fetchall()
             items = [dict(r) for r in rows]
-    return _seed_rank(items, limit)
+    return _seed_rank(_dedupe_items(items), limit)
 
 
 def build_recommend_pool(max_tags: int = 2, per_tag: int = 15) -> int:
@@ -738,13 +870,16 @@ def get_related(video_id: int, limit: int = 8) -> list[dict]:
         excl_sql, excl_params = _adult_exclude_sql("videos")
         if excl_sql:
             conds.append(excl_sql[5:])  # 去掉前缀 " AND "
+        cmt_sql, cmt_params = _commentary_exclude_sql("videos")
+        if cmt_sql:
+            conds.append(cmt_sql[5:])
 
         rows = db.execute(
             f"SELECT * FROM videos WHERE {' AND '.join(conds)} "
             "ORDER BY rating DESC, updated_at DESC LIMIT ?",
-            params + excl_params + [limit]
+            params + excl_params + cmt_params + [limit]
         ).fetchall()
-    return [dict(r) for r in rows]
+    return _dedupe_items([dict(r) for r in rows])
 
 
 def get_watch_history(limit: int = 20, adult: bool = False) -> list[dict]:
@@ -752,6 +887,7 @@ def get_watch_history(limit: int = 20, adult: bool = False) -> list[dict]:
     adult=False（默认）排除成人内容；adult=True 只返回成人内容（供成人页单独展示）。"""
     from app.adult import adult_cond_sql
     cond, params = adult_cond_sql("v")
+    cmt_sql, cmt_params = _commentary_exclude_sql("v")
     if cond:
         if adult:
             cond_sql = f" AND {cond}"
@@ -759,6 +895,7 @@ def get_watch_history(limit: int = 20, adult: bool = False) -> list[dict]:
             cond_sql = f" AND NOT {cond}"
     else:
         cond_sql = ""
+    cond_sql += cmt_sql
     with get_db() as db:
         rows = db.execute(
             f"""
@@ -775,9 +912,9 @@ def get_watch_history(limit: int = 20, adult: bool = False) -> list[dict]:
             WHERE 1=1{cond_sql}
             ORDER BY h.watched_at DESC
             LIMIT ?
-            """, params + [limit]
+            """, params + cmt_params + [limit]
         ).fetchall()
-    return [dict(r) for r in rows]
+    return _dedupe_first([dict(r) for r in rows])
 
 
 def save_watch_history(video_id: int, episode_id: int | None,
@@ -838,7 +975,11 @@ def delete_adult_history() -> int:
 
 
 def upsert_video(video: dict) -> int:
-    """插入或更新视频，返回 video_id"""
+    """插入或更新视频，返回 video_id；解说/二创内容直接跳过返回 0"""
+    if is_commentary_title(video.get("title")):
+        return 0
+    from app.douban import normalize_title
+    title_norm = normalize_title(video.get("title"))
     with get_db() as db:
         existing = db.execute(
             "SELECT id FROM videos WHERE source_url=?",
@@ -849,9 +990,11 @@ def upsert_video(video: dict) -> int:
             fields = ["title", "type", "cover", "description", "year",
                       "area", "director", "actors", "rating", "source",
                       "genre", "hits", "hits_week", "douban_score", "remarks"]
+            fields = fields + ["title_norm"]
             sets = ", ".join(f"{f}=?" for f in fields)
             sets += ", updated_at=CURRENT_TIMESTAMP"
             values = [video.get(f) for f in fields]
+            values[-1] = title_norm
             values.append(video["source_url"])
             db.execute(
                 f"UPDATE videos SET {sets} WHERE source_url=?",
@@ -862,8 +1005,8 @@ def upsert_video(video: dict) -> int:
             cur = db.execute(
                 """INSERT INTO videos(title, type, cover, description, year,
                    area, director, actors, rating, source, genre, hits, hits_week,
-                   douban_score, remarks, source_url)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   douban_score, remarks, title_norm, source_url)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (video["title"], video.get("type", "movie"),
                  video.get("cover"), video.get("description"),
                  video.get("year"), video.get("area"),
@@ -871,7 +1014,7 @@ def upsert_video(video: dict) -> int:
                  video.get("rating"), video.get("source", ""),
                  video.get("genre", ""), video.get("hits", 0),
                  video.get("hits_week", 0), video.get("douban_score"),
-                 video.get("remarks", ""),
+                 video.get("remarks", ""), title_norm,
                  video["source_url"])
             )
             return cur.lastrowid

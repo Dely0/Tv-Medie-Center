@@ -24,6 +24,10 @@ def get_search_sources(include_dead: bool = False) -> list:
         if s.adult and not adult_on:
             continue
         sources.append(s)
+    from app.source_framework.alist_tvbox_adapter import get_source as get_atv_source
+    atv = get_atv_source()
+    if atv is not None and (include_dead or not is_source_dead(atv.name)):
+        sources.append(atv)
     return sorted_by_priority(sources)
 
 
@@ -52,15 +56,23 @@ def get_source_by_name(name: str):
     if src:
         return src
     from app.source_framework.drpy_source import get_registry
-    return get_registry().get_by_name(name)
+    src = get_registry().get_by_name(name)
+    if src:
+        return src
+    from app.source_framework.alist_tvbox_adapter import get_source as get_atv_source
+    atv = get_atv_source()
+    return atv if atv and atv.name == name else None
 
 
 def get_source_count() -> dict:
     """各类型源数量（诊断用）。"""
     from app.maccms_source import get_manager
     from app.source_framework.drpy_source import get_registry
-    return {
+    result = {
         "maccms": len(get_manager().get_all()),
         "drpy_total": len(get_registry().get_all()),
         "drpy_enabled": len(get_registry().get_enabled()),
     }
+    from app.source_framework.alist_tvbox_adapter import get_source as get_atv_source
+    result["alist_tvbox"] = 1 if get_atv_source() is not None else 0
+    return result

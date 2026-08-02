@@ -58,6 +58,9 @@ def main():
     # 启动 drpyS 侧车（阶段 B：JS 爬虫生态）
     from app.sidecar.drpys import ensure_started
     ensure_started(wait_seconds=20)
+    # 启动 alist-tvbox 侧车（网盘聚合 + 本地代理加速）
+    from app.sidecar.alist_tvbox import ensure_started as ensure_atv_started
+    ensure_atv_started(wait_seconds=60)
     # 安装 DoH 解析回退（系统 DNS 失败时自动使用）
     from app.net import doh
     from config import DOH_ENABLED

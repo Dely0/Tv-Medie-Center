@@ -738,3 +738,12 @@ class _MaccmsWrapper:
 
     def get_play_url(self, url: str) -> Optional[str]:
         return self._src.get_play_url(url)
+
+    def resolve_play_lines(self, url_or_id: str, episode: int = None,
+                           max_candidates: int = 6) -> list[dict]:
+        """播放链解析：返回该视频所有线路指定集地址及请求头。"""
+        return self._src.resolve_play_lines(url_or_id, episode, max_candidates)
+
+    @property
+    def header_profile(self) -> dict:
+        return getattr(self._src, "header_profile", None) or {}

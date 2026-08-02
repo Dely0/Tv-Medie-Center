@@ -22,7 +22,7 @@
       }
     },
     {
-      "name": "155成人源",
+      "name": "♥155(直连)",
       "base_url": "https://155api.com",
       "category_map": {
         "movie": "1",
@@ -144,6 +144,26 @@
     {
       "name": "色猫资源",
       "base_url": "https://caiji.semaozy.net",
+      "category_map": {
+        "movie": "1",
+        "tv": "2",
+        "variety": "3",
+        "anime": "4"
+      }
+    },
+    {
+      "name": "滴滴",
+      "base_url": "https://didizy.com",
+      "category_map": {
+        "movie": "1",
+        "tv": "2",
+        "variety": "3",
+        "anime": "4"
+      }
+    },
+    {
+      "name": "滴滴资源",
+      "base_url": "https://api.ddapi.cc",
       "category_map": {
         "movie": "1",
         "tv": "2",

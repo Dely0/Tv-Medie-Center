@@ -1,0 +1,15 @@
+# alist-tvbox 外部配置（覆盖 jar 内置 application.yaml 的 app.sites）
+app:
+  sites:
+    - name: 本地
+      url: http://127.0.0.1:5244
+      version: 4
+      searchable: true
+    - name: 神族九帝
+      url: https://alist.shenzjd.com
+      version: 4
+      searchable: true
+    - name: 七米蓝
+      url: https://al.chirmyram.com
+      version: 4
+      searchable: true

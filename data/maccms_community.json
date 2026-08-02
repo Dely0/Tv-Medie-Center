@@ -1,6 +1,6 @@
 {
-  "_version": 27,
-  "_updated_at": "2026-08-02 10:49:26",
+  "_version": 76,
+  "_updated_at": "2026-08-02 16:46:46",
   "_from": [],
   "sources": [
     {
@@ -511,34 +511,8 @@
       "from_config": "drpys-collect"
     },
     {
-      "name": "滴滴资源",
-      "base_url": "https://api.ddapi.cc",
-      "enabled": true,
-      "category_map": {
-        "movie": "1",
-        "tv": "2",
-        "variety": "3",
-        "anime": "4"
-      },
-      "source_type": "maccms",
-      "from_config": "drpys-collect"
-    },
-    {
       "name": "森林",
       "base_url": "http://senlinzy2.com",
-      "enabled": true,
-      "category_map": {
-        "movie": "1",
-        "tv": "2",
-        "variety": "3",
-        "anime": "4"
-      },
-      "source_type": "maccms",
-      "from_config": "drpys-collect"
-    },
-    {
-      "name": "滴滴",
-      "base_url": "https://didizy.com",
       "enabled": true,
       "category_map": {
         "movie": "1",

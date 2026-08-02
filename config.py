@@ -78,3 +78,19 @@ DRPYS_DIR = os.path.join(SIDECAR_DIR, "drpys")
 NODE_DIR = os.path.join(SIDECAR_DIR, "node")
 NPM_CACHE_DIR = os.path.join(SIDECAR_DIR, "npm-cache")
 DRPYS_LOG_DIR = os.path.join(SIDECAR_DIR, "logs")
+
+# ============ 阶段：alist-tvbox（网盘聚合 + 本地代理加速） ============
+# AList：网盘驱动（夸克/UC/115 等），alist-tvbox：TVBox 聚合与 /p/ 播放代理
+ALIST_TVBOX_ENABLED = True
+ALIST_TVBOX_BASE_URL = "http://127.0.0.1:4567"   # alist-tvbox（TVBox 协议 + 播放代理）
+ALIST_TVBOX_ALIST_URL = "http://127.0.0.1:5244"  # AList（网盘驱动）
+ALIST_DIR = os.path.join(SIDECAR_DIR, "alist")
+ALIST_DATA_DIR = os.path.join(ALIST_DIR, "data")
+ALIST_ADMIN_USER = "admin"
+ALIST_ADMIN_PASSWORD = "tvbox"
+ATV_DIR = os.path.join(SIDECAR_DIR, "alist-tvbox")
+ATV_JRE_DIR = os.path.join(SIDECAR_DIR, "jre21")
+ATV_DATA_DIR = os.path.join(ATV_DIR, "data")
+ATV_H2_DB = os.path.join(ATV_DATA_DIR, "data")
+ATV_JAR = os.path.join(ATV_DIR, "alist-tvbox-1.0.jar")
+ATV_JAVA_MEM = "512m"

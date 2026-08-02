@@ -4,7 +4,8 @@ cd /d "%~dp0"
 
 echo Stopping all processes...
 taskkill /f /im msedge.exe >nul 2>&1
-taskkill /f /im python.exe >nul 2>&1
+rem 只结束主服务（main.py），保留 drpyS 及其 Python 守护进程
+powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'main\.py' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }" >nul 2>&1
 
 echo Clearing Python bytecode cache...
 if exist app\__pycache__ rmdir /s /q app\__pycache__ >nul 2>&1

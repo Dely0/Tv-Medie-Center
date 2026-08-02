@@ -24,6 +24,18 @@ def merge_drpy_collect_sources(test_working: bool = True) -> dict:
 
     _ADULT_NAME_HINTS = ("AV", "成人", "番号", "老色逼", "湿乐园", "奶香香", "色")
 
+    # 全局隔离：跳过已知成人源（按名称与 base_url 双重匹配，避免“滴滴/滴滴资源/♥155(直连)”
+    # 这类不带成人字样但内容全为成人视频的采集源被重新并回普通源池）
+    from app.adult import known_source_names as _adult_known_names
+    from app.adult import load_config as _adult_load_config
+    _adult_names = set(_adult_known_names())
+    _adult_bases = set()
+    for _s in (_adult_load_config().get("sources") or []):
+        _adult_names.add(_s.get("name") or "")
+        _b = (_s.get("base_url") or "").rstrip("/")
+        if _b:
+            _adult_bases.add(_b)
+
     json_dir = os.path.join(cfg.DRPYS_DIR, "json")
     existing_bases = {s.base_url for s in get_manager().get_all()}
     existing_names = {s.name for s in get_manager().get_all()}
@@ -50,6 +62,8 @@ def merge_drpy_collect_sources(test_working: bool = True) -> dict:
             if not base or base in seen_bases:
                 continue
             if any(h in name for h in _ADULT_NAME_HINTS):
+                continue
+            if name in _adult_names or base in _adult_bases:
                 continue
             if not name:
                 name = base
