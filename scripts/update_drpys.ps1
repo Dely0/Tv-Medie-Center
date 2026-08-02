@@ -34,6 +34,20 @@ Copy-Item -Path (Join-Path $inner.FullName '*') -Destination $drpysDir -Recurse 
 if (Test-Path (Join-Path $bak 'node_modules')) {
     Move-Item -LiteralPath (Join-Path $bak 'node_modules') -Destination (Join-Path $drpysDir 'node_modules')
 }
+# Preserve user config (quark/UC/baidu cookies and .env.development) across update
+foreach ($cfgFile in @('config\env.json', '.env.development', 'data\settings')) {
+    $src = Join-Path $bak $cfgFile
+    $dst = Join-Path $drpysDir $cfgFile
+    if (Test-Path $src) {
+        New-Item -ItemType Directory -Force -Path (Split-Path $dst) | Out-Null
+        if ((Get-Item $src).PSIsContainer) {
+            Copy-Item -Path (Join-Path $src '*') -Destination $dst -Recurse -Force
+        } else {
+            Copy-Item -LiteralPath $src -Destination $dst -Force
+        }
+        Write-Host "Preserved: $cfgFile"
+    }
+}
 Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $tar -Force -ErrorAction SilentlyContinue
 Write-Host "Updated. Old copy kept at: $bak"
