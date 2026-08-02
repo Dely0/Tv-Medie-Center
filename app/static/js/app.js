@@ -39,7 +39,7 @@ let _linesLoaded = false;      // 本次播放会话是否已拉取播放链
 let _linesPromise = null;      // 播放链拉取中的 Promise（去重 + 供按钮等待）
 let _linesRefreshTimer = null; // 播放链延迟刷新定时器（等待后台跨源补充）
 let _autoLineSwitched = false; // 本次播放会话是否已自动切到更快线路
-let _linesRetried = false;     // 是否已做过第二次延迟刷新
+let _linesRefreshCount = 0;    // 播放链延迟刷新次数（最多3轮，等后台跨源补充完成）
 let _stallTimer = null;        // 卡顿自动换线定时器
 let _srcStatusAt = 0;          // 源状态最近刷新时间
 
@@ -718,7 +718,7 @@ async function openPlayerAndPlay(videoId, episode, startSeconds) {
   _linesLoaded = false;
   _linesPromise = null;
   _autoLineSwitched = false;
-  _linesRetried = false;
+  _linesRefreshCount = 0;
   clearLineRefreshTimer();
   clearStallTimer();
   clearLoadTimer();
@@ -787,7 +787,7 @@ async function switchEpisode(dir) {
   _linesLoaded = false;
   _linesPromise = null;
   _autoLineSwitched = false;
-  _linesRetried = false;
+  _linesRefreshCount = 0;
   clearLineRefreshTimer();
   clearStallTimer();
   // 同步请求全屏（保留按键手势激活），未在全屏时进入全屏
@@ -1081,13 +1081,13 @@ async function fetchPlayLines(videoId, episode, forceRefresh) {
           _linesRefreshTimer = null;
           fetchPlayLines(videoId, episode, true);
         }, 14000);
-      } else if (!_linesRetried && _lines.length <= 3) {
-        // 跨源补充可能超过 14 秒，20 秒后再试一次
-        _linesRetried = true;
+      } else if (_linesRefreshCount < 3 && _lines.length <= 4) {
+        // 跨源补充最多需 50 秒左右，每 22 秒再刷新一轮
+        _linesRefreshCount++;
         _linesRefreshTimer = setTimeout(() => {
           _linesRefreshTimer = null;
           fetchPlayLines(videoId, episode, true);
-        }, 20000);
+        }, 22000);
       }
     } catch (e) {
       // 播放链获取失败时回退到旧的 best-source 兜底
@@ -1280,7 +1280,7 @@ function stopPlayerInternal(saveProgressNow) {
   _linesLoaded = false;
   _linesPromise = null;
   _autoLineSwitched = false;
-  _linesRetried = false;
+  _linesRefreshCount = 0;
   clearLineRefreshTimer();
   clearStallTimer();
   if (_diagVisible) { _diagVisible = false; const p = document.getElementById("diag-panel"); if (p) p.classList.add("hidden"); }

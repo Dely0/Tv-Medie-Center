@@ -47,6 +47,19 @@ def _pick_fastest_play_url(src, source_url: str, episode: int | None = None,
     except Exception:
         candidates = []
     if not candidates:
+        # 详情接口偶发超时：重试一次，仍失败则退回 get_play_url
+        try:
+            candidates = src.get_play_candidates(source_url, episode, 5)
+        except Exception:
+            candidates = []
+    if not candidates:
+        try:
+            u = src.get_play_url(source_url)
+            if u and str(u).startswith(("http://", "https://")):
+                candidates = [str(u)]
+        except Exception:
+            pass
+    if not candidates:
         return None, None
     from app.source_selector import measure_source
     profile = _header_profile(getattr(src, "name", ""))
@@ -125,8 +138,6 @@ def _gather_candidates(video_id: int, episode: int | None, max_candidates: int):
         if r["id"] == detail["id"]:
             continue
         if r["source"] in exclude or r["source"] == current_source:
-            continue
-        if is_source_dead(r["source"]):
             continue
         if normalize_title(r["title"]) != norm:
             continue
@@ -269,7 +280,7 @@ def _background_supplement(cache_key: str, video_id: int, title: str, norm: str,
 
         def find_match(src):
             try:
-                items = src.search(title, timeout=6)
+                items = src.search(title, timeout=4)
             except Exception:
                 return None
             match = None
@@ -280,12 +291,20 @@ def _background_supplement(cache_key: str, video_id: int, title: str, norm: str,
             return (src, match) if match else None
 
         # 阶段一：并行搜索全部源，收集匹配
-        sources = get_search_sources()
+        # 只搜优先级最高的 24 个源（含被隔离但优先级高的），保证补充在合理时间内完成
+        sources = get_search_sources(include_dead=True)
+        from app.ops.health import sorted_by_priority
+        sources = sorted_by_priority(sources)[:24]
+        if current_source:
+            from app.source_framework.registry import get_source_by_name
+            cur_src = get_source_by_name(current_source)
+            if cur_src and cur_src not in sources:
+                sources.append(cur_src)
         pool = ThreadPoolExecutor(max_workers=min(len(sources), 6))
         futures = [pool.submit(find_match, s) for s in sources]
         matches = []
         try:
-            for f in as_completed(futures, timeout=14):
+            for f in as_completed(futures, timeout=20):
                 try:
                     r = f.result(timeout=1)
                 except Exception:
@@ -297,7 +316,7 @@ def _background_supplement(cache_key: str, video_id: int, title: str, norm: str,
                     continue
                 matches.append((src, match))
                 have.add(src.name)
-                if len(matches) >= 8:
+                if len(matches) >= 6:
                     break
         except Exception:
             pass
@@ -323,6 +342,24 @@ def _background_supplement(cache_key: str, video_id: int, title: str, norm: str,
                 if not fast_url:
                     continue
                 src, _ = detail_futures[f]
+                # 持久化：找到的最快线路写入数据库，下次打开直接可用（不依赖再次搜索）
+                try:
+                    from app.database import upsert_video, upsert_episode
+                    item = {k: match.get(k) for k in (
+                        "title", "type", "cover", "description", "year", "area",
+                        "director", "actors", "rating", "source", "source_url",
+                        "genre", "hits", "hits_week", "douban_score", "remarks",
+                    )}
+                    item["source"] = src.name
+                    vid = upsert_video(item)
+                    if vid:
+                        upsert_episode(vid, {
+                            "episode_num": episode or 1,
+                            "episode_title": "",
+                            "play_url": fast_url,
+                        })
+                except Exception:
+                    pass
                 additions.append({
                     "video_id": None,
                     "source": src.name,
@@ -348,6 +385,15 @@ def _background_supplement(cache_key: str, video_id: int, title: str, norm: str,
                     if csrc and hasattr(csrc, "get_play_candidates"):
                         fast_url, fast_speed = _pick_fastest_play_url(csrc, current_source_url, episode, 6.0)
                         if fast_url:
+                            try:
+                                from app.database import upsert_episode
+                                upsert_episode(video_id, {
+                                    "episode_num": episode or 1,
+                                    "episode_title": "",
+                                    "play_url": fast_url,
+                                })
+                            except Exception:
+                                pass
                             for line in lines:
                                 if line.get("source") == current_source:
                                     if not line.get("speed_kbs") or (fast_speed or 0) > (line.get("speed_kbs") or 0):

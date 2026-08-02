@@ -38,7 +38,7 @@ DOH_ENABLED = True
 # 源健康状态文件（周期健康检查/自动隔离）
 SOURCE_HEALTH_FILE = os.path.join(DATA_DIR, "source_health.json")
 SOURCE_HEALTH_INTERVAL = 6 * 3600  # 健康检查周期（秒）
-SOURCE_HEALTH_DEAD_AFTER = 3       # 连续失败多少次判定为失效并隔离
+SOURCE_HEALTH_DEAD_AFTER = 5       # 连续失败多少次判定为失效并隔离（API 抖动不轻易隔离）
 
 # 社区源配置（自动从 TVBox 订阅提取 MacCMS 源，独立于远程主配置，防止被覆盖）
 COMMUNITY_SOURCES_FILE = os.path.join(DATA_DIR, "maccms_community.json")

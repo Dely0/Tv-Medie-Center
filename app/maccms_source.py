@@ -289,6 +289,10 @@ class MaccmsSource:
         if not vod_id:
             return []
         data = self._request({"ac": "detail", "ids": vod_id})
+        if not data:
+            import time as _t
+            _t.sleep(0.8)
+            data = self._request({"ac": "detail", "ids": vod_id})
         items = (data or {}).get("list") or []
         if not items:
             return []
@@ -685,7 +689,7 @@ def load_sources(config_path: str = None):
 
 # 将 MaccmsSource 包装成兼容现有爬虫框架的接口
 
-def get_maccms_crawlable_sources() -> list:
+def get_maccms_crawlable_sources(include_dead: bool = False) -> list:
     """返回兼容 app.sources.VideoSource 接口的包装对象（自动加载配置）"""
     import os
     if not _manager.get_all():
@@ -698,7 +702,7 @@ def get_maccms_crawlable_sources() -> list:
     wrapped = []
     from app.ops.health import is_source_dead
     for src in sources:
-        if is_source_dead(src.name):
+        if not include_dead and is_source_dead(src.name):
             continue
         wrapped.append(_MaccmsWrapper(src))
     return wrapped

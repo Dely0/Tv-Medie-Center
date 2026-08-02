@@ -7,18 +7,19 @@ import logging
 logger = logging.getLogger("registry")
 
 
-def get_search_sources() -> list:
-    """返回可搜索/可播放的源（健康过滤 + 成人过滤）。"""
+def get_search_sources(include_dead: bool = False) -> list:
+    """返回可搜索/可播放的源（默认健康过滤；include_dead=True 供播放链使用，
+    避免 API 暂时抖动导致线路消失）。"""
     from app.maccms_source import get_maccms_crawlable_sources
     from app.adult import is_enabled
     from app.ops.health import is_source_dead
     from app.ops.health import sorted_by_priority
     from app.source_framework.drpy_source import get_registry
 
-    sources = list(get_maccms_crawlable_sources())
+    sources = list(get_maccms_crawlable_sources(include_dead=include_dead))
     adult_on = is_enabled()
     for s in get_registry().get_all():
-        if not s.enabled or is_source_dead(s.name):
+        if not s.enabled or (not include_dead and is_source_dead(s.name)):
             continue
         if s.adult and not adult_on:
             continue

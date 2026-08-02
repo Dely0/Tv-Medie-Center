@@ -226,6 +226,10 @@ class DrpySource:
         if not vod_id:
             return {}, []
         data = self._request({"ac": "detail", "ids": vod_id})
+        if not data:
+            import time as _t
+            _t.sleep(0.8)
+            data = self._request({"ac": "detail", "ids": vod_id})
         items = (data or {}).get("list") or []
         if not items:
             return {}, []
