@@ -41,33 +41,28 @@ def _header_profile(source_name: str) -> dict | None:
 
 def _pick_fastest_play_url(src, source_url: str, episode: int | None = None,
                            timeout: float = 8.0):
-    """取该视频指定集的所有线路地址，并行实测后返回（最快URL, 速度）。"""
+    """取该视频指定集的所有线路地址（含请求头），并行实测后返回（最快URL, 速度, 请求头）。"""
     try:
-        candidates = src.get_play_candidates(source_url, episode, 5)
+        candidates = src.resolve_play_lines(source_url, episode, 4)
     except Exception:
         candidates = []
     if not candidates:
-        # 详情接口偶发超时：重试一次，仍失败则退回 get_play_url
+        # 详情接口偶发超时：重试一次
         try:
-            candidates = src.get_play_candidates(source_url, episode, 5)
+            candidates = src.resolve_play_lines(source_url, episode, 4)
         except Exception:
             candidates = []
     if not candidates:
-        try:
-            u = src.get_play_url(source_url)
-            if u and str(u).startswith(("http://", "https://")):
-                candidates = [str(u)]
-        except Exception:
-            pass
-    if not candidates:
-        return None, None
+        return None, None, None
     from app.source_selector import measure_source
-    profile = _header_profile(getattr(src, "name", ""))
-    best_url, best_speed = candidates[0], 0
+    best_url, best_speed = candidates[0]["url"], 0
+    best_header = candidates[0].get("header") or {}
     pool = ThreadPoolExecutor(max_workers=min(len(candidates), 4))
-    futs = {pool.submit(measure_source, u, (profile or {}).get("referer", ""),
-                        False, profile or {}, (profile or {}).get("ua")): u
-            for u in candidates}
+    futs = {}
+    for cand in candidates:
+        h = cand.get("header") or {}
+        futs[pool.submit(measure_source, cand["url"], h.get("referer", ""),
+                         False, h, h.get("ua"))] = cand
     try:
         for f in as_completed(futs, timeout=timeout + 2):
             try:
@@ -77,7 +72,8 @@ def _pick_fastest_play_url(src, source_url: str, episode: int | None = None,
             sp = m.get("speed_kbs")
             if sp and sp > best_speed:
                 best_speed = sp
-                best_url = futs[f]
+                best_url = futs[f]["url"]
+                best_header = futs[f].get("header") or {}
     except Exception:
         pass
     finally:
@@ -88,7 +84,7 @@ def _pick_fastest_play_url(src, source_url: str, episode: int | None = None,
             record_source_speed(getattr(src, "name", ""), best_speed)
         except Exception:
             pass
-    return best_url, best_speed or None
+    return best_url, best_speed or None, best_header
 
 
 def _gather_candidates(video_id: int, episode: int | None, max_candidates: int):
@@ -165,7 +161,7 @@ def _measure_candidates(candidates: list[dict], timeout: float) -> list[dict]:
     pool = ThreadPoolExecutor(max_workers=min(len(candidates), 4))
     futures = {}
     for c in candidates:
-        profile = _header_profile(c["source"])
+        profile = c.get("headers") or _header_profile(c["source"])
         futures[pool.submit(
             measure_source, c["play_url"],
             (profile or {}).get("referer", ""),
@@ -207,6 +203,7 @@ def _build_line(c: dict, profile: dict | None, m: dict) -> dict:
             record_source_speed(c["source"], m["speed_kbs"])
     except Exception:
         pass
+    profile = c.get("headers") or profile
     is_drpy = get_registry().get_by_name(c["source"]) is not None
     url = m.get("play_url") or c["play_url"]
     is_media = _is_media_url(url)
@@ -336,7 +333,7 @@ def _background_supplement(cache_key: str, video_id: int, title: str, norm: str,
         try:
             for f in as_completed(detail_futures, timeout=30):
                 try:
-                    fast_url, fast_speed = f.result(timeout=1)
+                    fast_url, fast_speed, fast_header = f.result(timeout=1)
                 except Exception:
                     continue
                 if not fast_url:
@@ -366,6 +363,7 @@ def _background_supplement(cache_key: str, video_id: int, title: str, norm: str,
                     "play_url": fast_url,
                     "episode_title": "",
                     "current": False,
+                    "headers": fast_header or {},
                 })
         except Exception:
             pass
@@ -382,8 +380,8 @@ def _background_supplement(cache_key: str, video_id: int, title: str, norm: str,
                 try:
                     from app.source_framework.registry import get_source_by_name
                     csrc = get_source_by_name(current_source)
-                    if csrc and hasattr(csrc, "get_play_candidates"):
-                        fast_url, fast_speed = _pick_fastest_play_url(csrc, current_source_url, episode, 6.0)
+                    if csrc and hasattr(csrc, "resolve_play_lines"):
+                        fast_url, fast_speed, fast_header = _pick_fastest_play_url(csrc, current_source_url, episode, 6.0)
                         if fast_url:
                             try:
                                 from app.database import upsert_episode
@@ -402,13 +400,14 @@ def _background_supplement(cache_key: str, video_id: int, title: str, norm: str,
                                         line["error"] = None
                                         line["speed_kbs"] = fast_speed
                                         line["ttfb_ms"] = None
+                                        line["headers"] = fast_header or {}
                                     break
                             else:
                                 lines.append({
                                     "source": current_source, "play_url": fast_url,
                                     "episode_title": "", "current": True, "kind": "direct",
                                     "speed_kbs": fast_speed, "ttfb_ms": None,
-                                    "error": None, "headers": {}, "use_proxy": True,
+                                    "error": None, "headers": fast_header or {}, "use_proxy": True,
                                 })
                 except Exception:
                     pass

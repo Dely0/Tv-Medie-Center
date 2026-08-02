@@ -284,7 +284,21 @@ def api_play(
     if not play_url:
         from app.source_framework.registry import get_search_sources
         all_sources = get_all_sources() + get_search_sources()
+        # drpy 盘源：直接调 lazy 解析真实直链（vod_play_url 里只有分享参数，不是直链）
+        from app.source_framework.drpy_source import get_registry
+        drpy_src = get_registry().get_by_name(detail.get("source", ""))
+        if drpy_src:
+            try:
+                lazy_lines = drpy_src.resolve_play_lines(detail.get("source_url", ""), episode, 3)
+                if lazy_lines:
+                    play_url = lazy_lines[0]["url"]
+                    play_headers = lazy_lines[0].get("header") or {}
+                    use_proxy = True
+            except Exception:
+                pass
         for src in all_sources:
+            if play_url:
+                break
             try:
                 resolved = src.get_play_url(detail["source_url"])
             except Exception:
@@ -317,7 +331,8 @@ def api_play(
             # drpy 源走本地代理，避免浏览器 CORS/防盗链导致卡顿
             use_proxy = True
             referer = (drpy_src.header_profile or {}).get("referer", "")
-            play_headers = drpy_src.header_profile or {}
+            if not play_headers:
+                play_headers = drpy_src.header_profile or {}
 
     return {
         "success": True,

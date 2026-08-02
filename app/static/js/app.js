@@ -836,7 +836,8 @@ async function loadAndPlayUrl(videoId, episode, overrideUrl, overrideSource) {
       if (data.referer || h.referer) p.push("ref=" + encodeURIComponent(data.referer || h.referer));
       if (h.ua) p.push("ua=" + encodeURIComponent(h.ua));
       if (h.origin) p.push("origin=" + encodeURIComponent(h.origin));
-      if (h.cookie) p.push("cookie=" + encodeURIComponent(h.cookie));
+      const ck = h.cookie || h.Cookie;
+      if (ck) p.push("cookie=" + encodeURIComponent(ck));
       const qs = p.length ? "&" + p.join("&") : "";
       const isM3u8 = data.play_url.toLowerCase().indexOf(".m3u8") > 0;
       data.play_url = (isM3u8 ? "/api/hls-proxy?url=" : "/api/media-proxy?url=")
@@ -1031,7 +1032,8 @@ function linePlayUrl(line) {
     if (line.headers.referer) p.push("ref=" + encodeURIComponent(line.headers.referer));
     if (line.headers.ua) p.push("ua=" + encodeURIComponent(line.headers.ua));
     if (line.headers.origin) p.push("origin=" + encodeURIComponent(line.headers.origin));
-    if (line.headers.cookie) p.push("cookie=" + encodeURIComponent(line.headers.cookie));
+    const ck = line.headers.cookie || line.headers.Cookie;
+    if (ck) p.push("cookie=" + encodeURIComponent(ck));
   }
   const qs = p.length ? "&" + p.join("&") : "";
   const isM3u8 = line.play_url.toLowerCase().indexOf(".m3u8") > 0;

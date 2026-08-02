@@ -29,7 +29,7 @@ _CONFIG_CACHE = None  # (ts, data)
 # 默认不启用的标签（非影视点播类）
 _DISABLED_TAGS = (
     "[听]", "[歌]", "[书]", "[FM]", "[漫画]", "[壁纸]", "[游戏]", "[球]", "[直播]",
-    "[搜]", "[磁]", "[模]", "[测试]", "[盘]",
+    "[磁]", "[模]", "[测试]",
 )
 # 默认不启用的名称片段
 _DISABLED_NAMES = (
@@ -110,7 +110,26 @@ def _default_enabled(name: str) -> bool:
         return False
     if any(h in name for h in _ADULT_HINTS):
         return False
+    # 盘/网盘搜索类源：只有配置了网盘凭据才启用（夸克/UC/百度/阿里等）
+    if "[盘]" in name or "[搜]" in name:
+        return _has_cloud_credentials()
     return any(kw in name for kw in _MOVIE_HINTS)
+
+
+def _has_cloud_credentials() -> bool:
+    """检查 drpyS config/env.json 是否配置了任一网盘凭据。"""
+    try:
+        p = os.path.join(cfg.DRPYS_DIR, "config", "env.json")
+        with open(p, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        keys = (
+            "quark_cookie", "quark_token_cookie", "uc_cookie", "uc_token_cookie",
+            "baidu_cookie", "ali_token", "ali_refresh_token", "pikpak_token",
+            "xun_username", "xun_password",
+        )
+        return any(str(data.get(k) or "").strip() for k in keys)
+    except Exception:
+        return False
 
 
 def _extract_js_headers(key: str, stype: int) -> dict:
@@ -236,6 +255,9 @@ class DrpySource:
         return self._normalize_detail(items[0])
 
     def get_play_url(self, url_or_id: str) -> str | None:
+        lines = self.resolve_play_lines(url_or_id, None, 1)
+        if lines:
+            return lines[0]["url"]
         _, episodes = self.get_detail(url_or_id)
         if episodes:
             return episodes[0].get("play_url")
@@ -270,6 +292,73 @@ class DrpySource:
             if len(urls) >= max_candidates:
                 break
         return urls
+
+    def resolve_lazy(self, url_or_id: str, episode: int = None,
+                     max_candidates: int = 6, timeout: int = 12) -> list[dict]:
+        """调用 drpyS lazy（play 接口）解析真实播放地址。
+        返回 [{"url": str, "header": dict}]；会剥离 #isVideo##fastPlayMode 等播放器标记，
+        跳过 127.0.0.1 内部代理地址与 push:// 分享链接（当前不支持）。
+        """
+        vod_id = self._extract_id(url_or_id)
+        if not vod_id:
+            return []
+        detail = self._request({"ac": "detail", "ids": vod_id}, timeout=timeout)
+        items = (detail or {}).get("list") or []
+        if not items:
+            return []
+        flags = [f.strip() for f in (items[0].get("vod_play_from") or "").split("$$$") if f.strip()]
+        if not flags:
+            return []
+        results = []
+        for flag in flags[:3]:
+            try:
+                play = self._request({
+                    "play": flag, "ids": vod_id, "ep": episode or 1,
+                }, timeout=timeout)
+            except Exception:
+                continue
+            if not play:
+                continue
+            if int(play.get("parse") or 0) == 1:
+                # 需要解析器通道（如夸克社），当前暂不支持
+                continue
+            url_field = play.get("url")
+            header = play.get("header") or {}
+            if isinstance(header, str):
+                try:
+                    header = json.loads(header)
+                except Exception:
+                    header = {}
+            urls = []
+            if isinstance(url_field, list):
+                # 成对 [名称, url, 名称, url...]
+                for u in url_field:
+                    if isinstance(u, str) and u.startswith("http"):
+                        urls.append(u)
+            elif isinstance(url_field, str) and url_field.startswith("http"):
+                urls.append(url_field)
+            for u in urls:
+                # 剥离播放器标记
+                clean = re.split(r"#isVideo=true", u, flags=re.I)[0].strip()
+                if not clean.startswith(("http://", "https://")):
+                    continue
+                if "127.0.0.1" in urllib.parse.urlparse(clean).netloc:
+                    continue
+                results.append({"url": clean, "header": dict(header)})
+                if len(results) >= max_candidates:
+                    return results
+        return results
+
+    def resolve_play_lines(self, url_or_id: str, episode: int = None,
+                           max_candidates: int = 6) -> list[dict]:
+        """供播放链使用：优先 lazy 直链（盘源必需），退回 vod_play_url 线路。
+        返回 [{"url": str, "header": dict}]。"""
+        lazy = self.resolve_lazy(url_or_id, episode, max_candidates)
+        if lazy:
+            return lazy
+        direct = self.get_play_candidates(url_or_id, episode, max_candidates)
+        profile = self.header_profile or {}
+        return [{"url": u, "header": dict(profile)} for u in direct]
 
     # ---------- 内部处理 ----------
 

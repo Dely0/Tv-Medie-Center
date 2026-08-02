@@ -311,6 +311,13 @@ class MaccmsSource:
                 break
         return urls
 
+    def resolve_play_lines(self, url_or_id: str, episode: int = None,
+                           max_candidates: int = 6) -> list[dict]:
+        """供播放链使用：返回该视频所有线路指定集地址及请求头。"""
+        direct = self.get_play_candidates(url_or_id, episode, max_candidates)
+        profile = self.header_profile or {}
+        return [{"url": u, "header": dict(profile)} for u in direct]
+
     # ─── 内部处理 ───
 
     def _extract_id(self, url_or_id: str) -> Optional[str]:
