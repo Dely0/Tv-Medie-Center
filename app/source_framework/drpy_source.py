@@ -239,6 +239,34 @@ class DrpySource:
             return url_or_id
         return url_or_id
 
+    def get_play_candidates(self, url_or_id: str, episode: int = None,
+                            max_candidates: int = 6) -> list[str]:
+        """返回该视频所有播放线路的指定集地址（默认第一集）。"""
+        ep_idx = max(0, int(episode) - 1) if episode else 0
+        if not isinstance(ep_idx, int):
+            ep_idx = 0
+        vod_id = self._extract_id(url_or_id)
+        if not vod_id:
+            return []
+        data = self._request({"ac": "detail", "ids": vod_id})
+        items = (data or {}).get("list") or []
+        if not items:
+            return []
+        raw = items[0].get("vod_play_url", "") or ""
+        urls = []
+        for source_str in re.split(r"\${3,}", raw):
+            parts = [p.strip() for p in source_str.split("#") if p.strip()]
+            if not parts:
+                continue
+            ep_part = parts[ep_idx] if ep_idx < len(parts) else parts[-1]
+            m = re.match(r".+?\$(https?://[^\$]+)", ep_part)
+            url = m.group(1) if m else ep_part
+            if url and url.startswith("http") and url not in urls:
+                urls.append(url)
+            if len(urls) >= max_candidates:
+                break
+        return urls
+
     # ---------- 内部处理 ----------
 
     def _extract_id(self, url_or_id: str) -> str | None:

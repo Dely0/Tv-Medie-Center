@@ -105,20 +105,46 @@ def _measure_source_speed(src):
     name = getattr(src, "name", "unknown")
     try:
         if hasattr(src, "list_page"):
-            items = src.list_page("movie", 1, 5)
+            items = src.list_page("movie", 1, 8)
         else:
-            items = src.get_list_page("movie", 1, 5)
-        item = next((it for it in items if it.get("source_url")), None)
-        if not item:
-            return name, None
-        url = src.get_play_url(item.get("source_url", ""))
-        if not url or not str(url).startswith(("http://", "https://")):
+            items = src.get_list_page("movie", 1, 8)
+        sample_items = [it for it in items if it.get("source_url")][:3]
+        if not sample_items:
             return name, None
         from app.source_selector import measure_source
         profile = getattr(src, "header_profile", None) or {}
-        m = measure_source(str(url), profile.get("referer", ""), False,
-                           profile or {}, profile.get("ua"))
-        return name, m.get("speed_kbs")
+        best = 0
+        for item in sample_items:
+            candidates = []
+            try:
+                candidates = src.get_play_candidates(item.get("source_url", ""), 5)
+            except Exception:
+                try:
+                    u = src.get_play_url(item.get("source_url", ""))
+                    if u and str(u).startswith(("http://", "https://")):
+                        candidates = [str(u)]
+                except Exception:
+                    pass
+            if not candidates:
+                continue
+            with ThreadPoolExecutor(max_workers=min(len(candidates), 4)) as pool:
+                futs = {pool.submit(measure_source, u, profile.get("referer", ""),
+                                    False, profile or {}, profile.get("ua")): u
+                        for u in candidates}
+                try:
+                    for f in as_completed(futs, timeout=12):
+                        try:
+                            m = f.result(timeout=1)
+                        except Exception:
+                            continue
+                        sp = m.get("speed_kbs")
+                        if sp and sp > best:
+                            best = sp
+                except Exception:
+                    pass
+                finally:
+                    pool.shutdown(wait=False)
+        return name, best or None
     except Exception:
         return name, None
 
@@ -132,6 +158,32 @@ def _update_speed(name: str, speed_kbs):
         })
         entry["speed_kbs"] = speed_kbs
         entry["priority"] = int(speed_kbs or 0)
+        entry["speed_at"] = time.time()
+        _write(data)
+
+
+def record_source_speed(name: str, speed_kbs):
+    """把真实播放/测速结果回写为滚动均值，与深度探测取最大值作为优先级。
+    这样"实际用起来快"的源优先级会自动上涨。"""
+    if not speed_kbs or speed_kbs <= 0:
+        return
+    try:
+        speed_kbs = int(speed_kbs)
+    except Exception:
+        return
+    with _LOCK:
+        data = _read()
+        entry = data.setdefault(name, {
+            "state": "untested", "fails": 0, "oks": 0,
+            "latency_ms": None, "checked_at": None, "last_error": "",
+        })
+        old_ema = entry.get("speed_ema")
+        if old_ema is None:
+            entry["speed_ema"] = speed_kbs
+        else:
+            entry["speed_ema"] = round(int(old_ema) * 0.7 + speed_kbs * 0.3)
+        entry["speed_samples"] = int(entry.get("speed_samples") or 0) + 1
+        entry["priority"] = max(int(entry.get("speed_kbs") or 0), int(entry["speed_ema"]))
         entry["speed_at"] = time.time()
         _write(data)
 

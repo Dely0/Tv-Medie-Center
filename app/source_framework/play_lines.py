@@ -39,6 +39,45 @@ def _header_profile(source_name: str) -> dict | None:
     return dsrc.header_profile if dsrc else None
 
 
+def _pick_fastest_play_url(src, source_url: str, episode: int | None = None,
+                           timeout: float = 8.0):
+    """取该视频指定集的所有线路地址，并行实测后返回（最快URL, 速度）。"""
+    try:
+        candidates = src.get_play_candidates(source_url, episode, 5)
+    except Exception:
+        candidates = []
+    if not candidates:
+        return None, None
+    from app.source_selector import measure_source
+    profile = _header_profile(getattr(src, "name", ""))
+    best_url, best_speed = candidates[0], 0
+    pool = ThreadPoolExecutor(max_workers=min(len(candidates), 4))
+    futs = {pool.submit(measure_source, u, (profile or {}).get("referer", ""),
+                        False, profile or {}, (profile or {}).get("ua")): u
+            for u in candidates}
+    try:
+        for f in as_completed(futs, timeout=timeout + 2):
+            try:
+                m = f.result(timeout=1)
+            except Exception:
+                continue
+            sp = m.get("speed_kbs")
+            if sp and sp > best_speed:
+                best_speed = sp
+                best_url = futs[f]
+    except Exception:
+        pass
+    finally:
+        pool.shutdown(wait=False)
+    if best_speed:
+        try:
+            from app.ops.health import record_source_speed
+            record_source_speed(getattr(src, "name", ""), best_speed)
+        except Exception:
+            pass
+    return best_url, best_speed or None
+
+
 def _gather_candidates(video_id: int, episode: int | None, max_candidates: int):
     """收集候选线路（本地库同标题 + 当前视频）。"""
     from app.adult import known_source_names
@@ -151,6 +190,12 @@ def _measure_candidates(candidates: list[dict], timeout: float) -> list[dict]:
 
 def _build_line(c: dict, profile: dict | None, m: dict) -> dict:
     from app.source_framework.drpy_source import get_registry
+    try:
+        if m.get("speed_kbs"):
+            from app.ops.health import record_source_speed
+            record_source_speed(c["source"], m["speed_kbs"])
+    except Exception:
+        pass
     is_drpy = get_registry().get_by_name(c["source"]) is not None
     url = m.get("play_url") or c["play_url"]
     is_media = _is_media_url(url)
@@ -210,7 +255,8 @@ def _background_resolve(cache_key: str, candidates: list[dict]):
 
 
 def _background_supplement(cache_key: str, video_id: int, title: str, norm: str,
-                           episode: int | None, current_source: str):
+                           episode: int | None, current_source: str,
+                           current_source_url: str = ""):
     """后台跨源补充：在所有启用源（含 drpy）中搜索同标题视频并解析剧集，
     把新线路测速后合并进播放链缓存。"""
     from app.source_framework.registry import get_search_sources
@@ -261,48 +307,72 @@ def _background_supplement(cache_key: str, video_id: int, title: str, norm: str,
         if not matches:
             return
 
-        # 阶段二：并行解析匹配项的剧集
+        # 阶段二：并行解析匹配项指定集的所有线路并测速选最快
         additions = []
         detail_pool = ThreadPoolExecutor(max_workers=min(len(matches), 6))
-        detail_futures = [detail_pool.submit(src.get_detail, match.get("source_url", ""))
-                          for src, match in matches]
+        detail_futures = {
+            detail_pool.submit(_pick_fastest_play_url, src, match.get("source_url", ""), episode): (src, match)
+            for src, match in matches
+        }
         try:
-            for f in as_completed(detail_futures, timeout=16):
+            for f in as_completed(detail_futures, timeout=30):
                 try:
-                    _, eps2 = f.result(timeout=1)
+                    fast_url, fast_speed = f.result(timeout=1)
                 except Exception:
                     continue
-                if not eps2:
+                if not fast_url:
                     continue
-                ep, ep_title = _pick_episode(eps2, episode)
-                if ep and ep.get("play_url"):
-                    src = matches[detail_futures.index(f)][0]
-                    additions.append({
-                        "video_id": None,
-                        "source": src.name,
-                        "play_url": ep["play_url"],
-                        "episode_title": ep_title,
-                        "current": False,
-                    })
+                src, _ = detail_futures[f]
+                additions.append({
+                    "video_id": None,
+                    "source": src.name,
+                    "play_url": fast_url,
+                    "episode_title": "",
+                    "current": False,
+                })
         except Exception:
             pass
         finally:
             detail_pool.shutdown(wait=False)
 
-        if not additions:
-            return
-        measured = _measure_candidates(additions, min(6.0, cfg.PLAY_LINES_MEASURE_TIMEOUT))
+        measured = _measure_candidates(additions, min(6.0, cfg.PLAY_LINES_MEASURE_TIMEOUT)) if additions else []
         with _LINES_LOCK:
             cached = _LINES_CACHE.get(cache_key)
             lines = list(cached[1]) if cached else []
             existing_urls = {l.get("play_url") for l in lines}
+            # 当前源线路也升级为最快线路（本地存的往往是第一条线路）
+            if current_source and current_source_url:
+                try:
+                    from app.source_framework.registry import get_source_by_name
+                    csrc = get_source_by_name(current_source)
+                    if csrc and hasattr(csrc, "get_play_candidates"):
+                        fast_url, fast_speed = _pick_fastest_play_url(csrc, current_source_url, episode, 6.0)
+                        if fast_url:
+                            for line in lines:
+                                if line.get("source") == current_source:
+                                    if not line.get("speed_kbs") or (fast_speed or 0) > (line.get("speed_kbs") or 0):
+                                        line["play_url"] = fast_url
+                                        line["kind"] = "direct"
+                                        line["error"] = None
+                                        line["speed_kbs"] = fast_speed
+                                        line["ttfb_ms"] = None
+                                    break
+                            else:
+                                lines.append({
+                                    "source": current_source, "play_url": fast_url,
+                                    "episode_title": "", "current": True, "kind": "direct",
+                                    "speed_kbs": fast_speed, "ttfb_ms": None,
+                                    "error": None, "headers": {}, "use_proxy": True,
+                                })
+                except Exception:
+                    pass
             for m in measured:
                 if m.get("play_url") and m["play_url"] not in existing_urls:
                     lines.append(m)
                     existing_urls.add(m["play_url"])
             lines.sort(key=lambda x: (-(x.get("speed_kbs") or -1), 0 if x.get("current") else 1))
             _LINES_CACHE[cache_key] = (time.time(), lines[:12])
-        logger.info(f"播放链后台补充: {cache_key} 新增 {len(measured)} 条线路")
+        logger.info(f"播放链后台补充: {cache_key} 新增 {len(measured)} 条线路(含最快线路升级)")
     except Exception as e:
         logger.debug(f"播放链后台补充失败: {e}")
     finally:
@@ -332,9 +402,10 @@ def get_play_lines(video_id: int, episode: int | None = None, refresh: bool = Fa
         norm = normalize_title(title)
         current_source = (detail or {}).get("source", "")
         if norm:
+            source_url = (detail or {}).get("source_url", "")
             threading.Thread(
                 target=_background_supplement,
-                args=(cache_key, video_id, title, norm, episode, current_source),
+                args=(cache_key, video_id, title, norm, episode, current_source, source_url),
                 daemon=True,
             ).start()
 
