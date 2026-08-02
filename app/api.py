@@ -303,9 +303,12 @@ def api_play(
     referer = ""
     use_proxy = False
     drpy_src = None
+    play_headers = {}
     for s in get_maccms_manager().get_all():
         if s.name == detail.get("source", ""):
             referer = s.base_url + "/"
+            use_proxy = True  # 采集站 CDN 大多校验 Referer，统一走本地代理
+            play_headers = getattr(s, "header_profile", None) or {}
             break
     if not referer:
         from app.source_framework.drpy_source import get_registry
@@ -314,6 +317,7 @@ def api_play(
             # drpy 源走本地代理，避免浏览器 CORS/防盗链导致卡顿
             use_proxy = True
             referer = (drpy_src.header_profile or {}).get("referer", "")
+            play_headers = drpy_src.header_profile or {}
 
     return {
         "success": True,
@@ -322,7 +326,7 @@ def api_play(
         "play_url": play_url,
         "source": detail.get("source", ""),
         "referer": referer,
-        "headers": drpy_src.header_profile if use_proxy and drpy_src else {},
+        "headers": play_headers,
         "use_proxy": use_proxy,
         "start_seconds": start_seconds,
     }

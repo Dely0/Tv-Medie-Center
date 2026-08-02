@@ -166,7 +166,7 @@ def _build_line(c: dict, profile: dict | None, m: dict) -> dict:
         # HTML 播放页线路不能直接播，标记为待解析，切换时跳过
         "error": m.get("error") if is_media else (m.get("error") or "播放页待解析"),
         "headers": profile or {},
-        # drpy 源统一走本地代理（同源请求，规避浏览器 CORS/防盗链）
+        # 带 Referer/UA 的线路（含全部 MacCMS 源）与 drpy 源统一走本地代理
         "use_proxy": needs_proxy(profile) or is_drpy,
     }
 

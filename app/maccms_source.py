@@ -83,7 +83,9 @@ class MaccmsSource:
         self.category_map = category_map or DEFAULT_CATEGORY_IDS.copy()
         self.enabled = enabled
         self.proxy = proxy
-        self.header_profile = headers or {}
+        # 播放/测速统一使用源站 Referer（采集站 CDN 通常校验来源）
+        self.header_profile = dict(headers or {})
+        self.header_profile.setdefault("referer", self.base_url)
 
     def _headers(self) -> dict:
         from app.net.headers import build_headers
