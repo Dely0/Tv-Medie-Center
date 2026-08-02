@@ -84,3 +84,33 @@ python scripts\build_portable.py
 JAR 宿主方案，改用两条更可行的路线：drpyS JS 爬虫生态（阶段 B，已含荐片/玩偶/果果等）
 + MacCMS 采集站大池（本页上一节）。网盘类源（夸克/UC/阿里）需要登录凭据，默认关闭，
 后续如需接入再单独做。
+
+## 网盘源技术路线调研（2026-08-02）
+
+**结论：可行，不需要额外部署 AList/alist-tvbox。**
+
+drpyS 已内置 20+ 盘类源与夸克/UC/阿里/百度/迅雷/PikPak 的完整解析库：
+
+- 需要的凭据写在 `sidecar/drpys/config/env.json`：`quark_cookie`（夸克，最常用）、
+  `uc_cookie`、`baidu_cookie`、`ali_token`/`ali_refresh_token` 等；
+- 夸克支持扫码登录获取 Cookie（drpyS 管理后台/设置中心），并有 token 自动续期逻辑；
+- 播放链路：lazy 返回带签名的直链 + `#isVideo=true##fastPlayMode##threads=20#` 标记 +
+  `header:{Cookie:...}`；我们需剥离标记并走本地代理携带 Cookie（现有 hls/media-proxy 已支持
+  cookie 参数）；
+- 实测：无 Cookie 时夸克社[盘] 详情可出分享链接但 play 返回 `parse:1`（需解析器通道），
+  其余盘源（立播/欧哥等）依赖 `quark_cookie` 才能解析直链。
+
+**前置条件与风险（需用户确认）**：
+
+1. 需要至少一个夸克网盘账号（建议专门小号，避免风控/封号）；
+2. 网盘账号风控：高频解析可能触发验证/限流，需控制并发；
+3. Cookie 会过期，夸克 token 可自动续期，但可能偶尔需要重新扫码；
+4. 分享链接时效性短，与免费源一样需要持续更新。
+
+**落地计划（用户提供夸克 Cookie 后实施）**：
+
+1. `config/env.json` 写入 Cookie（或扫码），drpyS 侧车启动时加载；
+2. 适配层放开 [盘] 源注册（仅当 Cookie 存在时启用）；
+3. 播放适配：drpyS play → 剥离 `#isVideo#` 标记 → 本地代理带 Cookie；
+4. 部分源（夸克社）接 drpyS `/parse` 解析器通道；
+5. 先在配置里提供夸克 Cookie 入口（配置文件），后续可加管理页。
